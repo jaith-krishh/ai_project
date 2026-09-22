@@ -1,0 +1,5 @@
+# Ignore large dataset directories (audio assets)
+# ESC-50 dataset
+data/ESC-50/
+# UrbanSound8K dataset
+data/UrbanSound8K/
