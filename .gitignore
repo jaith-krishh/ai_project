@@ -3,3 +3,5 @@
 data/ESC-50/
 # UrbanSound8K dataset
 data/UrbanSound8K/
+__pycache__/
+*.pyc
