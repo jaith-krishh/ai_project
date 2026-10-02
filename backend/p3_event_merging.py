@@ -210,14 +210,18 @@ def label_windows(
     method: str = "distance",
     radii: Optional[Dict[str, float]] = None,
     min_confidence: float = 0.3,
-    silence_db: Optional[float] = -50.0
+    silence_db: Optional[float] = -50.0,
+    background_db: Optional[float] = 20.0
 ) -> List[Dict[str, Any]]:
     """
     Converts P2's raw window output ({"start", "end", "probs", "embedding", "rms_db"})
     into the labelled predictions consumed by merge_events / postprocess_predictions.
 
     For each window, in order:
-    1. Silence: if its loudness ("rms_db") is below silence_db, it yields nothing.
+    1. Silence / background: it yields nothing if its loudness ("rms_db") is below
+       silence_db (absolute), or more than background_db dB quieter than the
+       loudest window in the recording (quiet background between the main sounds,
+       which the model can't name and would otherwise be flagged Unknown).
     2. Unknown: if its unknown-score (see backend/unknown_scoring.py; method
        "distance", "normalized_distance" or "max_softmax") exceeds P1's threshold,
        it yields a single "Unknown" prediction (confidence = highest class probability).
@@ -245,9 +249,15 @@ def label_windows(
         raise ValueError("normalized_distance needs class radii; rerun backend.compute_centroids.")
     spans = _owned_spans(windows)
 
+    loudness = [w["rms_db"] for w in windows if w.get("rms_db") is not None]
+    floor = silence_db
+    if background_db is not None and loudness:
+        relative_floor = max(loudness) - background_db
+        floor = relative_floor if floor is None else max(floor, relative_floor)
+
     labelled = []
     for win in windows:
-        if silence_db is not None and win.get("rms_db") is not None and win["rms_db"] < silence_db:
+        if floor is not None and win.get("rms_db") is not None and win["rms_db"] < floor:
             continue
 
         probs = win["probs"]

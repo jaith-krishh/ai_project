@@ -217,5 +217,19 @@ class TestP3EventMerging(unittest.TestCase):
         self.assertLess(legacy[0]["similarity"], 0.5)
 
 
+    def test_quiet_background_relative_to_recording_is_skipped(self):
+        """Test a window far quieter than the recording's loudest part is background, even above silence_db."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0], "rms_db": -15.0},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.2, "traffic": 0.2}, "embedding": [1.0, 0.0, 0.0], "rms_db": -45.0},
+            {"start": 8.0, "end": 12.0, "probs": {"drilling": 0.1, "traffic": 0.8}, "embedding": [0.5, 0.5, 0.0], "rms_db": -30.0}
+        ]
+        labelled = label_windows(windows, self.centroids, threshold=0.5, method="max_softmax")
+        self.assertEqual([w["label"] for w in labelled], ["drilling", "traffic"])
+
+        kept = label_windows(windows, self.centroids, threshold=0.5, method="max_softmax", background_db=None)
+        self.assertEqual([w["label"] for w in kept], ["drilling", "Unknown", "traffic"])
+
+
 if __name__ == "__main__":
     unittest.main()

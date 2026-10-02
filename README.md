@@ -95,7 +95,9 @@ Any format librosa can read works (WAV, FLAC, OGG, MP3). If `centroids.pt` / `th
 | `--prob-threshold` | `0.3` | A window always reports its most likely class; other classes are also reported when their probability is at least this. Raise it if too many overlapping sounds appear, lower it if overlaps are missed. |
 | `--min-confidence` | `0.3` | Windows whose most likely class is below this are treated as background and produce no event |
 | `--silence-db` | `-50` | Windows quieter than this (dBFS) are treated as silence |
+| `--background-db` | `20` | Windows this many dB quieter than the loudest part of the recording are treated as background (negative turns it off). Raise it if quiet real sounds go missing |
 | `--similarity-temperature` | `0.5` | How sharp the Unknown "closest matches" percentages are. Smaller makes the closest class dominate more; larger spreads the percentage more evenly |
+| `--show-windows` | – | Also print every window's loudness, top class and probability, to help tune the options above |
 | `--top-k` | `3` | Closest known classes listed for each Unknown sound |
 | `--json PATH` | – | Also save events and percentages as JSON |
 
