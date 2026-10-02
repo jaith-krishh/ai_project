@@ -121,7 +121,7 @@ python -m frontend.server            # then open http://127.0.0.1:8000
 python -m frontend.server --port 8080
 ```
 
-It runs the same analysis as `run_analysis --input`, with default settings, and uses only Python's standard library. Files are deleted from the server after analysis. Run it from the project root so it finds `outputs/`.
+It has a light and a dark theme (follows the system setting; the button in the header switches and remembers the choice). It runs the same analysis as `run_analysis --input`, with default settings, and uses only Python's standard library. Files are deleted from the server after analysis. Run it from the project root so it finds `outputs/`.
 
 ## How it works
 

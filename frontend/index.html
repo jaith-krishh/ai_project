@@ -5,13 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Acoustic Sound Analyzer</title>
   <link rel="icon" href="data:,">
+  <script>
+    // Apply a saved theme before the page paints (avoids a light flash in dark mode).
+    try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="wrap">
-      <h1>Acoustic Sound Analyzer</h1>
-      <p class="muted">Upload a recording to detect its sounds, flag unknown ones and classify the location.</p>
+      <div>
+        <h1>Acoustic Sound Analyzer</h1>
+        <p class="muted">Upload a recording to detect its sounds, flag unknown ones and classify the location.</p>
+      </div>
+      <button id="theme-toggle" class="btn btn-quiet theme-toggle" type="button" aria-label="Switch colour theme">Dark mode</button>
     </div>
   </header>
 
