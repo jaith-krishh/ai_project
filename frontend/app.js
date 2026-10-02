@@ -12,6 +12,28 @@ let selectedFile = null;
 let current = null;          // { result, audioUrl }
 const history = [];          // previous analyses this session
 
+// ---------- theme ----------
+
+const themeBtn = $("theme-toggle");
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+function effectiveTheme() {
+  return document.documentElement.dataset.theme || (systemDark.matches ? "dark" : "light");
+}
+
+function updateThemeButton() {
+  themeBtn.textContent = effectiveTheme() === "dark" ? "Light mode" : "Dark mode";
+}
+
+themeBtn.addEventListener("click", () => {
+  const next = effectiveTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch (e) {}
+  updateThemeButton();
+});
+systemDark.addEventListener("change", updateThemeButton);
+updateThemeButton();
+
 // ---------- helpers ----------
 
 function fmtTime(sec, mode = "round") {
