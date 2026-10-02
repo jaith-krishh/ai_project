@@ -143,10 +143,33 @@ def load_centroids(centroids_path: str) -> Dict[str, np.ndarray]:
 
 
 def load_threshold(threshold_path: str) -> float:
-    """Loads the calibrated unknown-distance cutoff from P1's threshold.pt."""
+    """Loads the calibrated unknown cutoff from P1's threshold.pt."""
+    return load_unknown_config(threshold_path)["threshold"]
+
+
+def load_unknown_config(threshold_path: str) -> Dict[str, Any]:
+    """
+    Loads P1's threshold.pt as {"method": str, "threshold": float}. Files written
+    before calibration compared methods have no "method" key and use "distance".
+    """
     import torch
 
-    return float(torch.load(threshold_path, map_location="cpu")["threshold"])
+    payload = torch.load(threshold_path, map_location="cpu")
+    return {
+        "method": payload.get("method", "distance"),
+        "threshold": float(payload["threshold"]),
+    }
+
+
+def load_class_radii(centroids_path: str) -> Optional[Dict[str, float]]:
+    """Loads per-class spread from centroids.pt ({label: radius}), or None if absent."""
+    import torch
+
+    payload = torch.load(centroids_path, map_location="cpu")
+    if "class_radius" not in payload:
+        return None
+    radii = payload["class_radius"].cpu().numpy()
+    return {name: float(radii[i]) for i, name in enumerate(payload["class_names"])}
 
 
 def _owned_spans(windows: List[Dict[str, Any]]) -> Dict[float, float]:
@@ -174,44 +197,72 @@ def label_windows(
     windows: List[Dict[str, Any]],
     centroids: Dict[str, Union[List[float], np.ndarray]],
     threshold: Optional[float],
-    prob_threshold: float = 0.3
+    prob_threshold: float = 0.3,
+    method: str = "distance",
+    radii: Optional[Dict[str, float]] = None,
+    min_confidence: float = 0.3,
+    silence_db: Optional[float] = -50.0
 ) -> List[Dict[str, Any]]:
     """
-    Converts P2's raw window output ({"start", "end", "probs", "embedding"}) into the
-    labelled predictions consumed by merge_events / postprocess_predictions.
+    Converts P2's raw window output ({"start", "end", "probs", "embedding", "rms_db"})
+    into the labelled predictions consumed by merge_events / postprocess_predictions.
 
-    - If the Euclidean distance from a window's embedding to every known centroid
-      exceeds P1's threshold, the window yields a single "Unknown" prediction
-      (confidence = its highest class probability).
-    - Otherwise it yields the highest-probability class, plus every other class
-      whose softmax probability is >= prob_threshold, so overlapping sounds
-      (e.g. traffic + birds sharing the probability mass) are all kept.
-    - If threshold is None (P1's threshold.pt not available yet), unknown
-      detection is skipped.
+    For each window, in order:
+    1. Silence: if its loudness ("rms_db") is below silence_db, it yields nothing.
+    2. Unknown: if its unknown-score (see backend/unknown_scoring.py; method
+       "distance", "normalized_distance" or "max_softmax") exceeds P1's threshold,
+       it yields a single "Unknown" prediction (confidence = highest class probability).
+    3. Uncertain: if its highest class probability is below min_confidence, it
+       yields nothing (background the model can't name with any confidence).
+    4. Otherwise it yields the highest-probability class, plus every other class
+       whose softmax probability is >= prob_threshold, so overlapping sounds
+       (e.g. traffic + birds sharing the probability mass) are all kept.
+
+    If threshold is None (P1's threshold.pt not available yet), step 2 is skipped.
 
     Each prediction's start/end is trimmed to the span the window owns (see
     _owned_spans), so predictions from consecutive windows never overlap.
     """
-    known = [np.asarray(v, dtype=np.float64) for k, v in centroids.items() if k.lower() != "unknown"]
-    centroid_matrix = np.stack(known) if known else None
+    from backend.unknown_scoring import unknown_scores
+
+    known_labels = [k for k in centroids if k.lower() != "unknown"]
+    centroid_matrix = (
+        np.stack([np.asarray(centroids[k], dtype=np.float64) for k in known_labels])
+        if known_labels else None
+    )
+    radius_vec = np.array([radii[k] for k in known_labels]) if radii and known_labels else None
+    detect_unknown = threshold is not None and (method == "max_softmax" or centroid_matrix is not None)
+    if method == "normalized_distance" and radius_vec is None:
+        raise ValueError("normalized_distance needs class radii; rerun backend.compute_centroids.")
     spans = _owned_spans(windows)
 
     labelled = []
     for win in windows:
+        if silence_db is not None and win.get("rms_db") is not None and win["rms_db"] < silence_db:
+            continue
+
         probs = win["probs"]
         start = float(win["start"])
         end = spans[start]
+        top_label = max(probs, key=probs.get)
+        top_prob = float(probs[top_label])
 
-        embedding = np.asarray(win["embedding"], dtype=np.float64)
         is_unknown = False
-        if centroid_matrix is not None and threshold is not None:
-            min_dist = float(np.min(np.linalg.norm(centroid_matrix - embedding, axis=1)))
-            is_unknown = min_dist > threshold
+        if detect_unknown:
+            score = unknown_scores(
+                method,
+                embeddings=np.asarray(win["embedding"], dtype=np.float64)[None, :],
+                centroids=centroid_matrix,
+                radii=radius_vec,
+                probs=np.array([list(probs.values())]),
+            )[0]
+            is_unknown = score > threshold
 
         if is_unknown:
-            active = [("Unknown", float(max(probs.values())))]
+            active = [("Unknown", top_prob)]
+        elif top_prob < min_confidence:
+            continue
         else:
-            top_label = max(probs, key=probs.get)
             active = [
                 (label, float(p)) for label, p in probs.items()
                 if label == top_label or p >= prob_threshold

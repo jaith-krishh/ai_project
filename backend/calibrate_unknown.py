@@ -16,15 +16,20 @@ Strategy
 3. Load the held-out "unknown" class (default: synthesised white-noise
    clips *or* real audio files supplied via --unknown-dir).  Compute
    the same minimum-centroid distance → "unknown" distance set.
-4. Sweep candidate thresholds and pick the one that maximises the
-   F1-score for the binary task "is this unknown?", using equal weight
-   for precision and recall.
-5. Save threshold.pt with the scalar threshold and diagnostic metadata.
+4. Score known and unknown clips with each method in
+   backend/unknown_scoring.py (distance, normalized_distance, max_softmax),
+   keep the method with the highest AUROC, and set its threshold so that at
+   most target_fpr (default 5%) of known clips are flagged Unknown.
+5. Save threshold.pt with the method, threshold and diagnostic metadata.
 
 Output
 ------
 outputs/threshold.pt — dict with:
-    "threshold"      : float   — the calibrated distance cutoff
+    "method"         : str     — chosen unknown-scoring method
+    "threshold"      : float   — the calibrated score cutoff for that method
+    "auroc", "tpr", "fpr"      — chosen method's separation, unknowns caught,
+                                 known clips wrongly flagged
+    "methods"        : dict    — the same numbers for every method tried
     "metric"         : str     — optimisation target ("f1")
     "best_f1"        : float   — F1 at the chosen threshold
     "known_dists"    : Tensor  — min-centroid distances for known clips
@@ -48,7 +53,7 @@ Usage (from project root)
 Inference usage
 ---------------
 At inference time, flag a sound as "Unknown" when:
-    min_dist_to_any_centroid  >  threshold
+    unknown_score(method)  >  threshold
 """
 
 from __future__ import annotations
@@ -62,6 +67,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from backend.unknown_scoring import METHODS, auroc, unknown_scores
 from backend.utils import audio_window_to_mel, load_model, SAMPLE_RATE, TARGET_LENGTH
 
 # ---------------------------------------------------------------------------
@@ -149,6 +155,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8,
         help="Inference batch size (default: 8)",
+    )
+    parser.add_argument(
+        "--method",
+        choices=("auto",) + METHODS,
+        default="auto",
+        help="Unknown-scoring method; 'auto' tries all and keeps the best AUROC (default: auto)",
+    )
+    parser.add_argument(
+        "--target-fpr",
+        type=float,
+        default=0.05,
+        help="Max share of known clips flagged Unknown; sets the threshold (default: 0.05)",
     )
     return parser.parse_args()
 
@@ -423,6 +441,8 @@ def calibrate_unknown(
     synth_clips: int = DEFAULT_SYNTH_CLIPS,
     out_path: str = DEFAULT_OUTPUT,
     batch_size: int = 8,
+    method: str = "auto",
+    target_fpr: float = 0.05,
 ) -> dict:
     """Calibrate the unknown-detection distance threshold.
 
@@ -449,6 +469,11 @@ def calibrate_unknown(
         audio is available.
     out_path:
         Output path for ``threshold.pt``.
+    method:
+        Unknown-scoring method (see backend/unknown_scoring.py), or "auto" to
+        try all and keep the one with the highest AUROC.
+    target_fpr:
+        Share of known clips allowed to be flagged Unknown; sets the threshold.
 
     Returns
     -------
@@ -553,25 +578,76 @@ def calibrate_unknown(
           f"std: {unknown_dists.std():.4f}  "
           f"min: {unknown_dists.min():.4f}")
 
-    # --- Find optimal threshold -----------------------------------------------
+    # --- Find optimal threshold (distance method, F1 sweep; kept for reference) --
     print("[calibrate_unknown] Sweeping thresholds …")
-    threshold, best_f1 = _find_best_threshold(known_dists, unknown_dists)
+    best_f1_threshold, best_f1 = _find_best_threshold(known_dists, unknown_dists)
 
+    # --- Compare unknown-scoring methods --------------------------------------
+    # Softmax over the remaining classes only: a held-out class's own output
+    # must not count as "known".
+    keep_idx = [class_names.index(c) for c in class_names_for_eval]
+    radii_all = centroid_payload.get("class_radius")
+    radii = radii_all[keep_idx].numpy() if radii_all is not None else None
+
+    def _probs(embs: torch.Tensor) -> np.ndarray:
+        with torch.no_grad():
+            logits = model.classifier(embs.to(device).float())[:, keep_idx]
+            return torch.softmax(logits, dim=1).cpu().numpy()
+
+    inputs = {
+        "known": dict(embeddings=known_embs.numpy(), probs=_probs(known_embs)),
+        "unknown": dict(embeddings=unknown_embs.numpy(), probs=_probs(unknown_embs)),
+    }
+    candidates = [m for m in METHODS if m == method or method == "auto"]
+    if radii is None and "normalized_distance" in candidates:
+        print("[calibrate_unknown] centroids.pt has no class_radius (re-run compute_centroids); "
+              "skipping normalized_distance.")
+        candidates.remove("normalized_distance")
+    if not candidates:
+        raise ValueError(f"Method {method!r} is not available.")
+
+    results = {}
+    for m in candidates:
+        k_scores, u_scores = (
+            unknown_scores(m, centroids=centroids_for_eval.numpy(), radii=radii, **inputs[g])
+            for g in ("known", "unknown")
+        )
+        # Threshold: allow at most target_fpr of known clips to be flagged Unknown.
+        thr = float(np.quantile(k_scores, 1.0 - target_fpr))
+        results[m] = {
+            "threshold": thr,
+            "auroc": auroc(k_scores, u_scores),
+            "tpr": float((u_scores > thr).mean()),
+            "fpr": float((k_scores > thr).mean()),
+        }
+
+    chosen = max(results, key=lambda m: results[m]["auroc"])
     print(f"\n{'='*60}")
-    print(f"  ✅ Calibrated threshold : {threshold:.6f}")
-    print(f"  📊 Best F1 score        : {best_f1:.4f}")
+    print(f"  {'method':<20}{'AUROC':>8}{'caught':>10}{'false flags':>13}")
+    for m, r in results.items():
+        mark = "  <- chosen" if m == chosen else ""
+        print(f"  {m:<20}{r['auroc']:>8.3f}{r['tpr']:>10.1%}{r['fpr']:>13.1%}{mark}")
+    print(f"{'='*60}")
+    print(f"  Calibrated threshold ({chosen}): {results[chosen]['threshold']:.6f}")
+    print(f"  (distance-method best-F1 for reference: {best_f1:.4f})")
     print(f"{'='*60}\n")
-    print(
-        "Inference rule: flag sound as 'Unknown' when\n"
-        f"  min_distance_to_any_centroid  >  {threshold:.6f}"
-    )
+    if results[chosen]["auroc"] < 0.75:
+        print("[calibrate_unknown] WARNING: AUROC < 0.75, unknown detection will be weak. "
+              "Calibrating with --unknown-dir and real out-of-class recordings usually helps.")
 
     # --- Save threshold.pt ----------------------------------------------------
     os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
     payload = {
-        "threshold": threshold,
+        "method": chosen,
+        "threshold": results[chosen]["threshold"],
+        "target_fpr": target_fpr,
+        "auroc": results[chosen]["auroc"],
+        "tpr": results[chosen]["tpr"],
+        "fpr": results[chosen]["fpr"],
+        "methods": results,
         "metric": "f1",
         "best_f1": best_f1,
+        "best_f1_threshold": best_f1_threshold,
         "known_dists": known_dists,
         "unknown_dists": unknown_dists,
         "class_names": class_names_for_eval,
@@ -605,6 +681,8 @@ def main() -> None:
         synth_clips=args.synth_clips,
         out_path=args.out,
         batch_size=args.batch_size,
+        method=args.method,
+        target_fpr=args.target_fpr,
     )
 
 

@@ -49,7 +49,7 @@ Unknown detection needs two files produced from the dataset. Run these once (fro
 python -m backend.compute_centroids --data-dir data
 ```
 
-Runs every training clip through the model and stores the average embedding of each class.
+Runs every training clip through the model and stores the average embedding of each class, plus each class's spread (how far its clips typically sit from the average).
 
 **2. Unknown threshold** → `outputs/threshold.pt`
 
@@ -67,6 +67,16 @@ python -m backend.calibrate_unknown --data-dir data --holdout-class esc_church_b
 
 With neither option the script falls back to synthetic white noise, which is only good enough for testing.
 
+Calibration compares three ways of scoring how "unknown" a sound is and keeps the one with the best **AUROC** (the chance that an unknown clip scores higher than a known one; 0.5 = guessing, 1.0 = perfect):
+
+| Method | Flags a sound as Unknown when… |
+|---|---|
+| `distance` | its embedding is far from every class centroid |
+| `normalized_distance` | it is far from every centroid *relative to that class's usual spread* |
+| `max_softmax` | the model's best guess has low probability |
+
+The threshold is set so that at most 5% of known sounds get flagged Unknown (`--target-fpr 0.05`). Use `--method` to force one method. The output prints, for each method, its AUROC, the share of unknown clips caught and the share of known clips wrongly flagged.
+
 ## Analysing a file
 
 ```bash
@@ -83,6 +93,8 @@ Any format librosa can read works (WAV, FLAC, OGG, MP3). If `centroids.pt` / `th
 | `--window` | `4.0` | Window length in seconds (matches training clip length) |
 | `--hop` | `2.0` | Step between windows in seconds |
 | `--prob-threshold` | `0.3` | A window always reports its most likely class; other classes are also reported when their probability is at least this. Raise it if too many overlapping sounds appear, lower it if overlaps are missed. |
+| `--min-confidence` | `0.3` | Windows whose most likely class is below this are treated as background and produce no event |
+| `--silence-db` | `-50` | Windows quieter than this (dBFS) are treated as silence |
 | `--top-k` | `3` | Closest known classes listed for each Unknown sound |
 | `--json PATH` | – | Also save events and percentages as JSON |
 

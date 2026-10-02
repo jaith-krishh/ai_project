@@ -148,6 +148,8 @@ def compute_centroids(
     # class_count[class_idx] → number of clips processed for that class
     class_sum: Dict[int, torch.Tensor] = defaultdict(lambda: torch.zeros(128))
     class_count: Dict[int, int] = defaultdict(int)
+    # class_sq_sum[class_idx] → running sum of squared embedding norms (for class spread)
+    class_sq_sum: Dict[int, float] = defaultdict(float)
 
     model.eval()
     with torch.no_grad():
@@ -160,9 +162,13 @@ def compute_centroids(
             for emb, label_idx in zip(embs_cpu, labels.tolist()):
                 class_sum[label_idx] = class_sum[label_idx] + emb
                 class_count[label_idx] += 1
+                class_sq_sum[label_idx] += float((emb * emb).sum())
 
     # --- Compute mean centroid per class -----------------------------------
     centroids = torch.zeros(num_classes, 128)
+    # RMS distance of each class's clips to its centroid: sqrt(E||x||^2 - ||mu||^2).
+    # Used by the 'normalized_distance' unknown-detection method.
+    class_radius = torch.ones(num_classes)
     missing_classes: List[str] = []
 
     for class_idx in range(num_classes):
@@ -172,6 +178,9 @@ def compute_centroids(
             # Centroid stays as zero vector; caller can decide how to handle
         else:
             centroids[class_idx] = class_sum[class_idx] / count
+            mean_sq = class_sq_sum[class_idx] / count
+            var = max(mean_sq - float((centroids[class_idx] ** 2).sum()), 1e-8)
+            class_radius[class_idx] = var ** 0.5
 
     if missing_classes:
         print(
@@ -183,6 +192,7 @@ def compute_centroids(
     os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
     payload = {
         "centroids": centroids,    # (num_classes, 128)
+        "class_radius": class_radius,  # (num_classes,)
         "class_names": class_names,
     }
     torch.save(payload, out_path)

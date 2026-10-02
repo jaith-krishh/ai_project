@@ -407,3 +407,31 @@ class TestInferenceRuleSanity:
         assert unknown_flagged == len(unknown_dists), (
             f"Only {unknown_flagged}/{len(unknown_dists)} unknown clips correctly flagged"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unknown-scoring methods
+# ---------------------------------------------------------------------------
+
+class TestUnknownScoring:
+
+    def test_auroc_perfect_and_random(self):
+        from backend.unknown_scoring import auroc
+        assert auroc(np.array([0.0, 1.0, 2.0]), np.array([5.0, 6.0])) == 1.0
+        assert auroc(np.array([1.0, 1.0]), np.array([1.0, 1.0])) == 0.5
+
+    def test_auroc_ignores_class_imbalance(self):
+        from backend.unknown_scoring import auroc
+        rng = np.random.default_rng(0)
+        known = rng.normal(0, 1, 2000)
+        unknown = rng.normal(2, 1, 40)
+        assert 0.85 < auroc(known, unknown) < 0.98
+
+    def test_scores_per_method(self):
+        from backend.unknown_scoring import unknown_scores
+        emb = np.array([[3.0, 4.0]])
+        cents = np.array([[0.0, 0.0], [10.0, 0.0]])
+        assert unknown_scores("distance", embeddings=emb, centroids=cents)[0] == pytest.approx(5.0)
+        assert unknown_scores("normalized_distance", embeddings=emb, centroids=cents,
+                              radii=np.array([10.0, 1.0]))[0] == pytest.approx(0.5)
+        assert unknown_scores("max_softmax", probs=np.array([[0.7, 0.3]]))[0] == pytest.approx(0.3)
