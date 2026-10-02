@@ -483,3 +483,45 @@ class TestRunAnalysis:
         sf.write(wav_path, _make_sine(2.0), SAMPLE_RATE)
         with pytest.raises(FileNotFoundError):
             run_analysis(wav_path, checkpoint_path=str(tmp_path / "no_ckpt.pt"))
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline: analyze_file / --input CLI
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not os.path.exists(DEFAULT_CHECKPOINT), reason="trained checkpoint not available")
+class TestAnalyzeFile:
+
+    @pytest.fixture
+    def wav_path(self, tmp_path):
+        import soundfile as sf
+        path = str(tmp_path / "clip.wav")
+        sf.write(path, _make_sine(10.0), SAMPLE_RATE)
+        return path
+
+    def test_runs_without_centroids(self, wav_path, tmp_path):
+        from backend.run_analysis import analyze_file
+        result = analyze_file(
+            wav_path,
+            centroids_path=str(tmp_path / "missing.pt"),
+            threshold_path=str(tmp_path / "missing.pt"),
+        )
+        assert result["events"]
+        assert all(e["label"] != "Unknown" for e in result["events"])
+        assert "1. Detected sounds:" in result["report"]
+        assert "2. Location classification:" in result["report"]
+        assert all(p <= 100.0 + 1e-6 for p in result["aggregation"]["category_percentages"].values())
+
+    def test_far_embeddings_flagged_unknown(self, wav_path, tmp_path, capsys):
+        from backend.run_analysis import main
+        from backend.utils import load_model
+        _, class_names = load_model(DEFAULT_CHECKPOINT, device=torch.device("cpu"))
+        centroids_path = str(tmp_path / "centroids.pt")
+        threshold_path = str(tmp_path / "threshold.pt")
+        torch.save({"centroids": torch.full((len(class_names), 128), 1e3), "class_names": class_names}, centroids_path)
+        torch.save({"threshold": 1.0}, threshold_path)
+
+        main(["--input", wav_path, "--centroids", centroids_path, "--threshold", threshold_path])
+        out = capsys.readouterr().out
+        assert "Unknown" in out
+        assert "closest matches:" in out

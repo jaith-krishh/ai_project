@@ -123,7 +123,7 @@ class TestP3EventMerging(unittest.TestCase):
         """Test real P2 window dicts (probs + embedding) are labelled, with far embeddings flagged Unknown."""
         windows = [
             {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.2}, "embedding": [1.0, 0.0, 0.0]},
-            {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.3, "traffic": 0.8}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.2, "traffic": 0.8}, "embedding": [0.5, 0.5, 0.0]},
             {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.6, "traffic": 0.1}, "embedding": [9.0, 9.0, 9.0]}
         ]
         labelled = label_windows(windows, centroids=self.centroids, threshold=1.0)
@@ -154,14 +154,22 @@ class TestP3EventMerging(unittest.TestCase):
         windows = [
             {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.8}, "embedding": [0.5, 0.5, 0.0]},
             {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.1, "traffic": 0.7}, "embedding": [0.5, 0.5, 0.0]},
-            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.2, "traffic": 0.2}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.1, "traffic": 0.2, "siren": 0.7}, "embedding": [0.5, 0.5, 0.0]},
             {"start": 6.0, "end": 10.0, "probs": {"drilling": 0.6, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0]}
         ]
         events = postprocess_predictions(label_windows(windows, self.centroids, threshold=1.0), self.centroids)
 
         self.assertEqual([(e["label"], e["start"], e["end"]) for e in events],
-                         [("drilling", 0.0, 2.0), ("traffic", 0.0, 4.0), ("drilling", 6.0, 10.0)])
+                         [("drilling", 0.0, 2.0), ("traffic", 0.0, 4.0), ("siren", 4.0, 6.0), ("drilling", 6.0, 10.0)])
         self.assertAlmostEqual(events[1]["confidence"], 0.75)
+
+    def test_top_class_always_kept_and_threshold_optional(self):
+        """Test a low-confidence window still yields its top class, and threshold=None skips Unknown."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.25, "traffic": 0.2, "siren": 0.2}, "embedding": [9.0, 9.0, 9.0]}
+        ]
+        labelled = label_windows(windows, self.centroids, threshold=None)
+        self.assertEqual([w["label"] for w in labelled], ["drilling"])
 
 
 if __name__ == "__main__":

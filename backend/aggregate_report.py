@@ -45,8 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple
 # Entries are based on typical ESC-50 and UrbanSound8K classes (with esc_ and
 # us8k_ prefixes as generated in backend/dataset.py) alongside generic label names.
 #
-# NOTE: This mapping should be tuned once real label names come back from
-# the trained model's checkpoint class_names.
+# Checked against the 60 class_names in outputs/checkpoints/best_model.pt.
+# Household appliances (vacuum cleaner, washing machine), pets (dog, cat) and
+# human/indoor sounds are deliberately left out: they fall into 'other', which
+# pushes a recording towards 'Mixed / Residential'.
 CATEGORY_MAP: Dict[str, List[str]] = {
     "industrial": [
         # Generic / unprefixed sound labels
@@ -81,8 +83,6 @@ CATEGORY_MAP: Dict[str, List[str]] = {
         "esc_helicopter",
         "esc_airplane",
         "esc_hand_saw",
-        "esc_washing_machine",
-        "esc_vacuum_cleaner",
     ],
     "natural": [
         # Generic / unprefixed sound labels
@@ -100,19 +100,15 @@ CATEGORY_MAP: Dict[str, List[str]] = {
         "pouring_water",
         "thunderstorm",
         "natural",
-        # UrbanSound8K classes (us8k_ prefix)
-        "us8k_dog_bark",
         # ESC-50 classes (esc_ prefix)
         "esc_chirping_birds",
         "esc_crow",
         "esc_crickets",
         "esc_insects",
         "esc_frog",
-        "esc_dog",
         "esc_rooster",
         "esc_pig",
         "esc_cow",
-        "esc_cat",
         "esc_hen",
         "esc_sheep",
         "esc_rain",
