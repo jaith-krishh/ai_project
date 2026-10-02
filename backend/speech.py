@@ -52,12 +52,15 @@ def detect_speech(
 ) -> List[Dict[str, Any]]:
     """Return speech events [{"label": "Speech", "start", "end", "confidence", "similar_to": None}].
 
-    Segments closer than merge_gap_s are joined so a sentence with short pauses is
-    one event. confidence is the mean speech probability inside the segment.
+    The VAD scores every 32 ms chunk in one pass (``audio_forward``). A segment
+    starts when the probability reaches ``threshold`` and ends when it drops below
+    ``threshold - 0.15`` (hysteresis, as in Silero's own segmentation). Segments
+    shorter than min_speech_s are dropped and segments closer than merge_gap_s are
+    joined, so a sentence with short pauses is one event. confidence is the mean
+    speech probability inside the segment.
     """
     import librosa
     import torch
-    from silero_vad import get_speech_timestamps
 
     model = _load_vad()
     audio, _ = librosa.load(audio_path, sr=VAD_SAMPLE_RATE, mono=True)
@@ -65,43 +68,46 @@ def detect_speech(
         return []
     wav = torch.from_numpy(audio.astype(np.float32))
 
-    segments = get_speech_timestamps(
-        wav, model, threshold=threshold, sampling_rate=VAD_SAMPLE_RATE,
-        min_speech_duration_ms=int(min_speech_s * 1000), return_seconds=False,
-    )
-    if not segments:
-        return []
-
-    # Per-chunk speech probabilities for confidence values
-    chunk = 512
+    chunk = 512  # samples per VAD step at 16 kHz (32 ms)
     model.reset_states()
     with torch.no_grad():
-        probs = np.array([
-            float(model(torch.nn.functional.pad(wav[i:i + chunk], (0, max(0, chunk - len(wav[i:i + chunk])))),
-                        VAD_SAMPLE_RATE))
-            for i in range(0, len(wav), chunk)
-        ])
+        probs = model.audio_forward(wav, VAD_SAMPLE_RATE).squeeze(0).cpu().numpy()
     model.reset_states()
 
+    # Hysteresis segmentation over chunk probabilities
+    neg_threshold = max(threshold - 0.15, 0.01)
+    segments: List[Tuple[int, int]] = []
+    start = None
+    for i, p in enumerate(probs):
+        if start is None and p >= threshold:
+            start = i
+        elif start is not None and p < neg_threshold:
+            segments.append((start, i))
+            start = None
+    if start is not None:
+        segments.append((start, len(probs)))
+
+    min_chunks = min_speech_s * VAD_SAMPLE_RATE / chunk
+    gap_chunks = merge_gap_s * VAD_SAMPLE_RATE / chunk
     merged: List[Tuple[int, int]] = []
-    for seg in segments:
-        s, e = seg["start"], seg["end"]
-        if merged and s - merged[-1][1] <= merge_gap_s * VAD_SAMPLE_RATE:
+    for s, e in segments:
+        if merged and s - merged[-1][1] <= gap_chunks:
             merged[-1] = (merged[-1][0], e)
         else:
             merged.append((s, e))
+    merged = [(s, e) for s, e in merged if e - s >= min_chunks]
 
-    events = []
-    for s, e in merged:
-        p = probs[s // chunk: max(s // chunk + 1, e // chunk)]
-        events.append({
+    duration = len(audio) / VAD_SAMPLE_RATE
+    return [
+        {
             "label": SPEECH_LABEL,
-            "start": round(s / VAD_SAMPLE_RATE, 3),
-            "end": round(e / VAD_SAMPLE_RATE, 3),
-            "confidence": round(float(p.mean()) if len(p) else threshold, 4),
+            "start": round(s * chunk / VAD_SAMPLE_RATE, 3),
+            "end": round(min(e * chunk / VAD_SAMPLE_RATE, duration), 3),
+            "confidence": round(float(probs[s:e].mean()), 4),
             "similar_to": None,
-        })
-    return events
+        }
+        for s, e in merged
+    ]
 
 
 def _overlap(a_start: float, a_end: float, segs: List[Dict[str, Any]]) -> float:
