@@ -110,6 +110,17 @@ result["events"]       # [{"label", "start", "end", "confidence", "similar_to"},
 result["aggregation"]  # label / category percentages and location
 ```
 
+## Web front end
+
+A minimal page for uploading a recording and viewing the report (timeline, detected sounds, Unknown matches, percentages, text report, JSON download):
+
+```bash
+python -m frontend.server            # then open http://127.0.0.1:8000
+python -m frontend.server --port 8080
+```
+
+It runs the same analysis as `run_analysis --input`, with default settings, and uses only Python's standard library. Files are deleted from the server after analysis. Run it from the project root so it finds `outputs/`.
+
 ## How it works
 
 | Step | Module | Owner |
