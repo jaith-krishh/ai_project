@@ -283,6 +283,7 @@ def analyze_file(
     top_k: int = 3,
     min_confidence: float = 0.3,
     silence_db: float = -50.0,
+    background_db: Optional[float] = 20.0,
     similarity_temperature: float = 0.5,
 ) -> Dict[str, Any]:
     """Run the complete analysis on one audio file.
@@ -339,6 +340,7 @@ def analyze_file(
         radii=radii,
         min_confidence=min_confidence,
         silence_db=silence_db,
+        background_db=background_db,
     )
     events = postprocess_predictions(
         labelled, centroids=centroids, top_k=top_k, similarity_temperature=similarity_temperature
@@ -351,6 +353,16 @@ def analyze_file(
         "aggregation": aggregation,
         "duration": duration,
         "report": report,
+        "windows": [
+            {
+                "start": w["start"],
+                "end": w["end"],
+                "rms_db": round(w.get("rms_db", float("nan")), 1),
+                "top_class": max(w["probs"], key=w["probs"].get),
+                "top_prob": round(max(w["probs"].values()), 3),
+            }
+            for w in windows
+        ],
     }
 
 
@@ -373,9 +385,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                         help="Windows whose most likely class is below this are treated as background (default: 0.3)")
     parser.add_argument("--silence-db", type=float, default=-50.0,
                         help="Windows quieter than this (dBFS) are treated as silence (default: -50)")
+    parser.add_argument("--background-db", type=float, default=20.0,
+                        help="Windows this many dB quieter than the loudest window are treated as background (default: 20; "
+                             "a negative value turns this off)")
     parser.add_argument("--top-k", type=int, default=3, help="Closest known classes listed for Unknown sounds (default: 3)")
     parser.add_argument("--similarity-temperature", type=float, default=0.5,
                         help="Sharpness of Unknown 'closest matches' percentages; smaller = sharper (default: 0.5)")
+    parser.add_argument("--show-windows", action="store_true",
+                        help="Also print each window's loudness, top class and probability (for tuning the thresholds).")
     parser.add_argument("--json", metavar="PATH", help="Also save events and aggregation as JSON to PATH.")
     args = parser.parse_args(argv)
 
@@ -390,13 +407,21 @@ def main(argv: Optional[List[str]] = None) -> None:
         top_k=args.top_k,
         min_confidence=args.min_confidence,
         silence_db=args.silence_db,
+        background_db=args.background_db if args.background_db >= 0 else None,
         similarity_temperature=args.similarity_temperature,
     )
     print(result["report"])
 
+    if args.show_windows:
+        loudest = max(w["rms_db"] for w in result["windows"])
+        print("\nWindows (start s, loudness dBFS, dB below loudest, top class, probability):")
+        for w in result["windows"]:
+            print(f"  {w['start']:7.1f}  {w['rms_db']:6.1f}  {loudest - w['rms_db']:5.1f}  "
+                  f"{w['top_class']:<28} {w['top_prob']:.2f}")
+
     if args.json:
         with open(args.json, "w") as f:
-            json.dump({k: v for k, v in result.items() if k != "report"}, f, indent=2)
+            json.dump({k: v for k, v in result.items() if k not in ("report", "windows")}, f, indent=2)
         print(f"\n[run_analysis] JSON saved -> {args.json}")
 
 
