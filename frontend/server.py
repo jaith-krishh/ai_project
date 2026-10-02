@@ -41,7 +41,12 @@ def _with_display_names(result: dict) -> dict:
     """Add display names ('us8k_engine_idling' -> 'Engine idling') and categories for the page."""
     for ev in result["events"]:
         ev["display"] = format_label_name(ev["label"])
-        ev["category"] = "unknown" if ev["label"].lower() == "unknown" else get_category_for_label(ev["label"])
+        if ev["label"].lower() == "unknown":
+            ev["category"] = "unknown"
+        elif ev["label"] == "Speech":
+            ev["category"] = "speech"  # counted as "other" for location; own colour on the page
+        else:
+            ev["category"] = get_category_for_label(ev["label"])
         for match in ev.get("similar_to") or []:
             match["display"] = format_label_name(match["label"])
     agg = result["aggregation"]
