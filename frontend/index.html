@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acoustic Sound Analyzer</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <h1>Acoustic Sound Analyzer</h1>
+      <p class="muted">Upload a recording to detect its sounds, flag unknown ones and classify the location.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card" aria-labelledby="upload-title">
+      <h2 id="upload-title">Upload audio</h2>
+      <label id="dropzone" class="dropzone" for="file-input">
+        <input id="file-input" type="file" accept=".wav,.mp3,.flac,.ogg,.m4a,.aiff,.aif,.au,audio/*">
+        <span id="drop-text">Drop an audio file here, or <u>choose a file</u></span>
+        <span class="muted small">WAV, MP3, FLAC, OGG, M4A · up to 200 MB</span>
+      </label>
+      <div class="row">
+        <button id="analyze-btn" class="btn" disabled>Analyze</button>
+        <span id="status" class="muted" role="status"></span>
+      </div>
+      <p id="error" class="error" hidden></p>
+    </section>
+
+    <section id="results" hidden>
+      <div class="card">
+        <div class="results-head">
+          <div>
+            <h2 id="res-file"></h2>
+            <p id="res-note" class="muted small" hidden></p>
+          </div>
+          <div class="row">
+            <button id="copy-btn" class="btn btn-quiet">Copy report</button>
+            <button id="json-btn" class="btn btn-quiet">Download JSON</button>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><span class="muted small">Location</span><strong id="stat-location"></strong></div>
+          <div class="stat"><span class="muted small">Duration</span><strong id="stat-duration"></strong></div>
+          <div class="stat"><span class="muted small">Sound events</span><strong id="stat-events"></strong></div>
+          <div class="stat"><span class="muted small">Unknown</span><strong id="stat-unknown"></strong></div>
+        </div>
+        <p id="location-reason" class="muted"></p>
+
+        <audio id="player" controls></audio>
+      </div>
+
+      <div class="card">
+        <h2>Timeline</h2>
+        <div id="timeline" class="timeline"></div>
+        <div id="timeline-axis" class="axis muted small"></div>
+        <div class="legend muted small">
+          <span><i class="dot cat-industrial"></i>Industrial</span>
+          <span><i class="dot cat-natural"></i>Natural</span>
+          <span><i class="dot cat-other"></i>Other</span>
+          <span><i class="dot cat-unknown"></i>Unknown</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Detected sounds</h2>
+        <p class="muted small">Click a row to play from that point.</p>
+        <table class="events">
+          <thead><tr><th>Sound</th><th>Time</th><th>Details</th></tr></thead>
+          <tbody id="events-body"></tbody>
+        </table>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Share of recording</h2>
+          <div id="label-bars"></div>
+        </div>
+        <div class="card">
+          <h2>Categories</h2>
+          <div id="category-bars"></div>
+          <p class="muted small">Industrial or natural above 60% decides the location; otherwise Mixed / Residential.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Text report</h2>
+        <pre id="report"></pre>
+      </div>
+    </section>
+
+    <section id="history-card" class="card" hidden>
+      <h2>This session</h2>
+      <ul id="history" class="history"></ul>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
