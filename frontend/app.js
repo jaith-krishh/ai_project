@@ -14,8 +14,9 @@ const history = [];          // previous analyses this session
 
 // ---------- helpers ----------
 
-function fmtTime(sec) {
-  const s = Math.max(0, Math.round(sec));
+function fmtTime(sec, mode = "round") {
+  const r = mode === "floor" ? Math.floor : mode === "ceil" ? (x) => Math.ceil(x - 1e-9) : Math.round;
+  const s = Math.max(0, r(sec));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
@@ -152,7 +153,7 @@ function renderTimeline(r) {
       track.append(el("div", {
         class: `tl-seg cat-${ev.category}`,
         style: `left:${left}%;width:${width}%`,
-        title: `${name}  ${fmtTime(ev.start)}–${fmtTime(ev.end)}`,
+        title: `${name}  ${fmtTime(ev.start, "floor")}–${fmtTime(ev.end, "ceil")}`,
         onclick: () => seek(ev.start),
       }));
     }
@@ -181,7 +182,7 @@ function renderEvents(r) {
     const name = el("span", { class: ev.category === "unknown" ? "tag-unknown" : "" }, ev.display);
     body.append(el("tr", { onclick: () => seek(ev.start), title: "Play from here" },
       el("td", {}, el("span", { class: `dot cat-${ev.category}` }), name),
-      el("td", {}, `${fmtTime(ev.start)}–${fmtTime(ev.end)}`),
+      el("td", {}, `${fmtTime(ev.start, "floor")}–${fmtTime(ev.end, "ceil")}`),
       el("td", {}, details)));
   }
 }

@@ -135,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         "--val-fraction",
         type=float,
         default=DEFAULT_VAL_FRACTION,
-        help=f"Fraction of known clips to use as validation (default: {DEFAULT_VAL_FRACTION})",
+        help=f"Validation fraction used when training the model; must match train.py (default: {DEFAULT_VAL_FRACTION})",
     )
     parser.add_argument(
         "--synth-clips",
@@ -345,32 +345,40 @@ def _embed_known_val(
     val_fraction: float,
     exclude_classes: Optional[List[str]] = None,
 ) -> torch.Tensor:
-    """Extract embeddings for a random validation subset of the known dataset.
+    """Extract embeddings for the model's own validation clips.
+
+    Uses exactly the split backend/dataset.get_dataloaders made during training
+    (random_split with seed 42 and val_split = val_fraction, default 0.2), so
+    the known clips are ones the model never trained on. Training clips would
+    make the model look more confident on known sounds than it really is, which
+    pushes the threshold too strict and flags real known sounds as Unknown.
 
     Parameters
     ----------
+    val_fraction:
+        Validation fraction used when the model was trained (0.2 in train.py).
     exclude_classes:
         Class names to exclude from the known set (the held-out unknown
         class and any same-named class from the other dataset).
     """
-    import librosa
+    from torch.utils.data import random_split
     from backend.dataset import AudioDataset
 
     ds = AudioDataset(data_dir=data_dir, is_train=False)
 
-    # Filter out the held-out class if supplied
-    eligible = [
-        fp for fp, lbl in ds.samples
-        if lbl not in (exclude_classes or [])
+    n = len(ds)
+    n_val = int(n * val_fraction)
+    _, val_subset = random_split(
+        range(n), [n - n_val, n_val], generator=torch.Generator().manual_seed(42)
+    )
+    val_paths = [
+        ds.samples[i][0] for i in val_subset.indices
+        if ds.samples[i][1] not in (exclude_classes or [])
     ]
 
-    random.seed(SEED)
-    n_val = max(1, int(len(eligible) * val_fraction))
-    val_paths = random.sample(eligible, n_val)
-
     print(
-        f"[calibrate_unknown] Using {len(val_paths)} known-class validation clips "
-        f"(val_fraction={val_fraction:.0%})"
+        f"[calibrate_unknown] Using {len(val_paths)} known-class clips from the model's "
+        f"validation split (val_fraction={val_fraction:.0%}, never seen in training)"
     )
     return _embed_file_list(val_paths, model, device, desc="Embedding known-val clips")
 

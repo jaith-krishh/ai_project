@@ -279,6 +279,11 @@ class TestOverlapAndFormatting:
         report = format_report(events, aggregate_events(events, total_duration=5.0))
         assert "closest matches: 60% engine idling, 40% chirping birds" in report
 
+    def test_short_event_never_shows_zero_length(self):
+        events = [{"label": "us8k_dog_bark", "start": 0.0, "end": 0.4, "confidence": 0.98, "similar_to": None}]
+        report = format_report(events, aggregate_events(events, total_duration=0.4))
+        assert "00:00\u201300:01" in report
+
 
 # ---------------------------------------------------------------------------
 # Direct Runner
