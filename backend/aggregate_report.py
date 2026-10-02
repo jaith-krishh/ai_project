@@ -35,7 +35,7 @@ event merging, embedding distance metrics, or centroid definitions.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +231,22 @@ def get_category_for_label(label: str) -> str:
     return "other"
 
 
+def _covered_duration(intervals: List[Tuple[float, float]]) -> float:
+    """Total time covered by a set of (start, end) intervals, counting overlaps once."""
+    covered = 0.0
+    cur_start = cur_end = None
+    for start, end in sorted(intervals):
+        if cur_end is None or start > cur_end:
+            if cur_end is not None:
+                covered += cur_end - cur_start
+            cur_start, cur_end = start, end
+        else:
+            cur_end = max(cur_end, end)
+    if cur_end is not None:
+        covered += cur_end - cur_start
+    return covered
+
+
 def aggregate_events(
     events: List[Dict[str, Any]],
     total_duration: float,
@@ -260,32 +276,35 @@ def aggregate_events(
     if total_duration <= 0.0:
         total_duration = max((float(e.get("end", 0.0)) for e in events), default=0.0)
 
-    # 1. Sum duration per label across all events
-    label_durations: Dict[str, float] = {}
+    # 1. Collect event intervals per label and per broad category
+    label_intervals: Dict[str, List[Tuple[float, float]]] = {}
+    category_intervals: Dict[str, List[Tuple[float, float]]] = {
+        "industrial": [],
+        "natural": [],
+    }
     for ev in events:
         label = str(ev.get("label", "Unknown"))
         start = float(ev.get("start", 0.0))
         end = float(ev.get("end", 0.0))
-        dur = max(0.0, end - start)
-        label_durations[label] = label_durations.get(label, 0.0) + dur
+        if end <= start:
+            continue
+        label_intervals.setdefault(label, []).append((start, end))
+        category_intervals.setdefault(get_category_for_label(label), []).append((start, end))
 
-    # 2. Convert each label's total duration into percentage of total_duration
+    # 2. Convert each label's covered time into percentage of total_duration.
+    # Overlapping intervals are only counted once, so no label exceeds 100%.
     label_percentages: Dict[str, float] = {}
     if total_duration > 0.0:
-        for label, dur in label_durations.items():
-            label_percentages[label] = round((dur / total_duration) * 100.0, 2)
+        for label, intervals in label_intervals.items():
+            label_percentages[label] = round((_covered_duration(intervals) / total_duration) * 100.0, 2)
 
-    # 3. Roll individual labels up into broad categories using CATEGORY_MAP
-    category_percentages: Dict[str, float] = {
-        "industrial": 0.0,
-        "natural": 0.0,
-    }
-    for label, pct in label_percentages.items():
-        cat = get_category_for_label(label)
-        if cat in category_percentages:
-            category_percentages[cat] = round(category_percentages[cat] + pct, 2)
-        else:
-            category_percentages[cat] = round(category_percentages.get(cat, 0.0) + pct, 2)
+    # 3. Category percentages use the union of all their labels' intervals, so
+    # simultaneous sounds in the same category (e.g. traffic + drilling) aren't
+    # double-counted.
+    category_percentages: Dict[str, float] = {}
+    for cat, intervals in category_intervals.items():
+        pct = (_covered_duration(intervals) / total_duration) * 100.0 if total_duration > 0.0 else 0.0
+        category_percentages[cat] = round(pct, 2)
 
     # 4. Call classify_location() on the category percentages
     location = classify_location(category_percentages)
@@ -386,10 +405,7 @@ def format_report(
                 if similar_to:
                     matches = []
                     for match in similar_to:
-                        m_label = str(match.get("label", "")).replace("_", " ").strip()
-                        for prefix in ("us8k_", "esc_"):
-                            if m_label.startswith(prefix):
-                                m_label = m_label[len(prefix):]
+                        m_label = format_label_name(str(match.get("label", ""))).lower()
                         m_sim = float(match.get("similarity", 0.0))
                         pct = int(round(m_sim * 100)) if m_sim <= 1.0 else int(round(m_sim))
                         matches.append(f"{pct}% {m_label}")

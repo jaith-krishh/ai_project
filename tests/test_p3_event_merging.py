@@ -135,6 +135,34 @@ class TestP3EventMerging(unittest.TestCase):
         self.assertEqual(events[2]["label"], "Unknown")
         self.assertIsNotNone(events[2]["similar_to"])
 
+    def test_overlapping_windows_do_not_double_count(self):
+        """Test 4s windows every 2s produce non-overlapping events when the label changes."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0]},
+            {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0]},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.1, "traffic": 0.9}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 6.0, "end": 10.0, "probs": {"drilling": 0.1, "traffic": 0.9}, "embedding": [0.5, 0.5, 0.0]}
+        ]
+        events = postprocess_predictions(label_windows(windows, self.centroids, threshold=1.0), self.centroids)
+
+        self.assertEqual([(e["label"], e["start"], e["end"]) for e in events],
+                         [("drilling", 0.0, 4.0), ("traffic", 4.0, 10.0)])
+        self.assertAlmostEqual(sum(e["end"] - e["start"] for e in events), 10.0)
+
+    def test_simultaneous_sounds_produce_parallel_events(self):
+        """Test multi-label windows keep overlapping sounds, and gaps split events of the same label."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.8}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.1, "traffic": 0.7}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.2, "traffic": 0.2}, "embedding": [0.5, 0.5, 0.0]},
+            {"start": 6.0, "end": 10.0, "probs": {"drilling": 0.6, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0]}
+        ]
+        events = postprocess_predictions(label_windows(windows, self.centroids, threshold=1.0), self.centroids)
+
+        self.assertEqual([(e["label"], e["start"], e["end"]) for e in events],
+                         [("drilling", 0.0, 2.0), ("traffic", 0.0, 4.0), ("drilling", 6.0, 10.0)])
+        self.assertAlmostEqual(events[1]["confidence"], 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

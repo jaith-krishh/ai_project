@@ -4,7 +4,8 @@ Acoustic Sound Analyzer Project
 Assigned Developer: Sarah (P3)
 
 This module implements post-processing for P2 raw sliding-window predictions:
-1. Merges consecutive/overlapping windows with identical predicted labels into event intervals.
+1. Merges windows with identical predicted labels into event intervals (per label, so
+   simultaneous sounds stay separate; overlapping window time is only counted once).
 2. Calculates merged event start/end boundaries and mean confidence.
 3. Computes distance-based similarity rankings against known class centroids for "Unknown" events.
 4. Outputs standardized event dictionaries compatible with P4 reporting.
@@ -148,70 +149,103 @@ def load_threshold(threshold_path: str) -> float:
     return float(torch.load(threshold_path, map_location="cpu")["threshold"])
 
 
+def _owned_spans(windows: List[Dict[str, Any]]) -> Dict[float, float]:
+    """
+    Maps each distinct window start time to the end of the time span that window
+    "owns". Sliding windows overlap (e.g. 4s windows every 2s), so each window only
+    owns the time up to the next window's start; the last window owns up to its
+    own end. This makes every second of audio belong to exactly one window, so
+    merged events never double-count overlapping time.
+    """
+    ends: Dict[float, float] = {}
+    for w in windows:
+        start = float(_extract_window_field(w, ["start", "start_time"], 0.0))
+        end = float(_extract_window_field(w, ["end", "end_time"], 0.0))
+        ends[start] = max(ends.get(start, end), end)
+
+    starts = sorted(ends)
+    return {
+        s: min(ends[s], starts[i + 1]) if i + 1 < len(starts) else ends[s]
+        for i, s in enumerate(starts)
+    }
+
+
 def label_windows(
     windows: List[Dict[str, Any]],
     centroids: Dict[str, Union[List[float], np.ndarray]],
-    threshold: float
+    threshold: float,
+    prob_threshold: float = 0.5
 ) -> List[Dict[str, Any]]:
     """
     Converts P2's raw window output ({"start", "end", "probs", "embedding"}) into the
     labelled predictions consumed by merge_events / postprocess_predictions.
 
-    Each window gets its highest-probability class as label, unless the Euclidean
-    distance from its embedding to every known centroid exceeds P1's threshold,
-    in which case it is labelled "Unknown".
+    - If the Euclidean distance from a window's embedding to every known centroid
+      exceeds P1's threshold, the window yields a single "Unknown" prediction
+      (confidence = its highest class probability).
+    - Otherwise it yields one prediction per class whose sigmoid probability is
+      >= prob_threshold, so overlapping sounds (e.g. traffic + birds) are all kept.
+      Windows with no class above prob_threshold yield nothing (background).
+
+    Each prediction's start/end is trimmed to the span the window owns (see
+    _owned_spans), so predictions from consecutive windows never overlap.
     """
     known = [np.asarray(v, dtype=np.float64) for k, v in centroids.items() if k.lower() != "unknown"]
     centroid_matrix = np.stack(known) if known else None
+    spans = _owned_spans(windows)
 
     labelled = []
     for win in windows:
         probs = win["probs"]
-        top_label = max(probs, key=probs.get)
-        confidence = float(probs[top_label])
+        start = float(win["start"])
+        end = spans[start]
 
         embedding = np.asarray(win["embedding"], dtype=np.float64)
+        is_unknown = False
         if centroid_matrix is not None:
             min_dist = float(np.min(np.linalg.norm(centroid_matrix - embedding, axis=1)))
-            if min_dist > threshold:
-                top_label = "Unknown"
+            is_unknown = min_dist > threshold
 
-        labelled.append({
-            "start": float(win["start"]),
-            "end": float(win["end"]),
-            "label": top_label,
-            "confidence": confidence,
-            "embedding": win["embedding"]
-        })
+        if is_unknown:
+            active = [("Unknown", float(max(probs.values())))]
+        else:
+            active = [(label, float(p)) for label, p in probs.items() if p >= prob_threshold]
+
+        for label, confidence in active:
+            labelled.append({
+                "start": start,
+                "end": end,
+                "label": label,
+                "confidence": confidence,
+                "embedding": win["embedding"]
+            })
 
     return labelled
 
 
 def merge_events(predictions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Merges consecutive/overlapping raw window predictions with identical predicted labels.
+    Merges window predictions with identical labels into event intervals.
+
+    Predictions are first trimmed to the span each window owns (so overlapping
+    windows don't overlap in time), then, separately for each label, windows whose
+    spans touch or overlap are joined into one event. Different labels are tracked
+    independently, so simultaneous sounds produce simultaneous events.
 
     Args:
-        predictions: List of raw sliding-window prediction dictionaries from P2.
+        predictions: List of window prediction dictionaries (one per active label per window).
 
     Returns:
         List of intermediate event dictionaries containing merged time boundaries,
-        mean confidence, label, and aggregated embedding vector.
+        mean confidence, label, and aggregated embedding vector, sorted by start time.
     """
     if not predictions:
         return []
 
-    merged_events = []
-    current_windows = [predictions[0]]
+    spans = _owned_spans(predictions)
+    tolerance = 1e-6
 
-    def _create_event(windows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        first_win = windows[0]
-        last_win = windows[-1]
-
-        start_time = float(_extract_window_field(first_win, ["start", "start_time"], 0.0))
-        end_time = float(_extract_window_field(last_win, ["end", "end_time"], 0.0))
-        label = str(_extract_window_field(first_win, ["label", "predicted_label"], "Unknown"))
-
+    def _create_event(label: str, windows: List[Dict[str, Any]], start: float, end: float) -> Dict[str, Any]:
         # Calculate mean confidence across merged windows
         confidences = [
             float(_extract_window_field(w, ["confidence", "probability", "score"], 0.0))
@@ -233,28 +267,37 @@ def merge_events(predictions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         return {
             "label": label,
-            "start": start_time,
-            "end": end_time,
+            "start": start,
+            "end": end,
             "confidence": mean_confidence,
             "_embedding": mean_embedding
         }
 
-    for win in predictions[1:]:
-        curr_label = _extract_window_field(current_windows[-1], ["label", "predicted_label"])
-        next_label = _extract_window_field(win, ["label", "predicted_label"])
+    # Group predictions by label, keeping chronological order within each label
+    by_label: Dict[str, List[Dict[str, Any]]] = {}
+    for p in sorted(predictions, key=lambda w: float(_extract_window_field(w, ["start", "start_time"], 0.0))):
+        label = str(_extract_window_field(p, ["label", "predicted_label"], "Unknown"))
+        by_label.setdefault(label, []).append(p)
 
-        # Merge if consecutive window has identical label
-        if curr_label == next_label:
-            current_windows.append(win)
-        else:
-            merged_events.append(_create_event(current_windows))
-            current_windows = [win]
-
-    if current_windows:
-        merged_events.append(_create_event(current_windows))
+    merged_events = []
+    for label, windows in by_label.items():
+        current: List[Dict[str, Any]] = []
+        cur_start = cur_end = 0.0
+        for win in windows:
+            w_start = float(_extract_window_field(win, ["start", "start_time"], 0.0))
+            w_end = spans[w_start]
+            if current and w_start <= cur_end + tolerance:
+                current.append(win)
+                cur_end = max(cur_end, w_end)
+            else:
+                if current:
+                    merged_events.append(_create_event(label, current, cur_start, cur_end))
+                current, cur_start, cur_end = [win], w_start, w_end
+        if current:
+            merged_events.append(_create_event(label, current, cur_start, cur_end))
 
     # Sort chronologically by start time
-    merged_events.sort(key=lambda e: e["start"])
+    merged_events.sort(key=lambda e: (e["start"], e["end"]))
     return merged_events
 
 
