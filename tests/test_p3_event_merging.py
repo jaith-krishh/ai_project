@@ -163,13 +163,43 @@ class TestP3EventMerging(unittest.TestCase):
                          [("drilling", 0.0, 2.0), ("traffic", 0.0, 4.0), ("siren", 4.0, 6.0), ("drilling", 6.0, 10.0)])
         self.assertAlmostEqual(events[1]["confidence"], 0.75)
 
-    def test_top_class_always_kept_and_threshold_optional(self):
-        """Test a low-confidence window still yields its top class, and threshold=None skips Unknown."""
+    def test_top_class_kept_and_threshold_optional(self):
+        """Test a window keeps its top class even below prob_threshold, and threshold=None skips Unknown."""
         windows = [
-            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.25, "traffic": 0.2, "siren": 0.2}, "embedding": [9.0, 9.0, 9.0]}
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.35, "traffic": 0.2, "siren": 0.2}, "embedding": [9.0, 9.0, 9.0]}
         ]
-        labelled = label_windows(windows, self.centroids, threshold=None)
+        labelled = label_windows(windows, self.centroids, threshold=None, prob_threshold=0.5)
         self.assertEqual([w["label"] for w in labelled], ["drilling"])
+
+    def test_silent_and_uncertain_windows_skipped(self):
+        """Test quiet windows and windows below min_confidence produce no events."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0], "rms_db": -20.0},
+            {"start": 2.0, "end": 6.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [1.0, 0.0, 0.0], "rms_db": -80.0},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.22, "traffic": 0.2}, "embedding": [1.0, 0.0, 0.0], "rms_db": -20.0}
+        ]
+        labelled = label_windows(windows, self.centroids, threshold=1.0)
+        self.assertEqual([(w["label"], w["start"]) for w in labelled], [("drilling", 0.0)])
+
+    def test_max_softmax_method(self):
+        """Test max_softmax flags a low-confidence window as Unknown instead of dropping it."""
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"drilling": 0.9, "traffic": 0.1}, "embedding": [9.0, 9.0, 9.0]},
+            {"start": 4.0, "end": 8.0, "probs": {"drilling": 0.25, "traffic": 0.2}, "embedding": [1.0, 0.0, 0.0]}
+        ]
+        labelled = label_windows(windows, self.centroids, threshold=0.5, method="max_softmax")
+        self.assertEqual([w["label"] for w in labelled], ["drilling", "Unknown"])
+
+    def test_normalized_distance_method(self):
+        """Test normalized_distance uses each class's spread: same distance is known for a wide class, unknown for a tight one."""
+        centroids = {"wide": [0.0, 0.0], "tight": [10.0, 0.0]}
+        radii = {"wide": 4.0, "tight": 0.5}
+        windows = [
+            {"start": 0.0, "end": 4.0, "probs": {"wide": 0.9, "tight": 0.1}, "embedding": [3.0, 0.0]},
+            {"start": 4.0, "end": 8.0, "probs": {"wide": 0.1, "tight": 0.9}, "embedding": [10.0, 3.0]}
+        ]
+        labelled = label_windows(windows, centroids, threshold=2.0, method="normalized_distance", radii=radii)
+        self.assertEqual([w["label"] for w in labelled], ["wide", "Unknown"])
 
 
 if __name__ == "__main__":

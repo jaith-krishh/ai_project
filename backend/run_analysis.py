@@ -13,6 +13,7 @@ P3 consumes the output of ``run_analysis()`` and can assume::
         end       = window["end"]        # float  -- window end   in seconds
         probs     = window["probs"]      # dict[str, float]  class -> softmax prob
         embedding = window["embedding"]  # list[float]  128-dim feature vector
+        rms_db    = window["rms_db"]     # float  loudness in dBFS (silence ~ -60 or lower)
 
 P3 does NOT need to know about waveform preprocessing, librosa internals,
 PyTorch device handling, mel-spectrogram construction, or tensor dimensions.
@@ -28,6 +29,7 @@ Each window dict contains exactly::
                                      #           final short window)
         "probs":     dict[str, float],  # ALL known classes, softmax probabilities (sum to 1)
         "embedding": list[float],       # 128-dim CPU-side serialisable vector
+        "rms_db":    float,             # RMS loudness of the real (unpadded) audio, dBFS
     }
 
 Padding note
@@ -102,7 +104,7 @@ def _run_window(
 
     Returns
     -------
-    dict with keys ``start``, ``end``, ``probs``, ``embedding``.
+    dict with keys ``start``, ``end``, ``probs``, ``embedding``, ``rms_db``.
     """
     # --- Preprocessing: waveform -> (1, 1, n_mels, time_steps) tensor -------
     spec = audio_window_to_mel(audio_segment)   # (1, n_mels, T)
@@ -136,11 +138,15 @@ def _run_window(
         name: float(prob) for name, prob in zip(class_names, probs_np)
     }
 
+    rms = float(np.sqrt(np.mean(np.square(audio_segment, dtype=np.float64)))) if len(audio_segment) else 0.0
+    rms_db = 20.0 * np.log10(max(rms, 1e-10))
+
     return {
         "start": float(start_sec),
         "end": float(end_sec),
         "probs": probs_dict,
         "embedding": emb_np.tolist(),
+        "rms_db": float(rms_db),
     }
 
 
@@ -184,6 +190,7 @@ def run_analysis(
                 "end":       float,            # window end   (seconds, actual audio time)
                 "probs":     dict[str, float], # ALL classes, softmax [0, 1]
                 "embedding": list[float],      # 128-dim feature vector
+                "rms_db":    float,            # loudness, dBFS
             }
 
     Raises
@@ -274,6 +281,8 @@ def analyze_file(
     hop_seconds: float = DEFAULT_HOP_SECONDS,
     prob_threshold: float = 0.3,
     top_k: int = 3,
+    min_confidence: float = 0.3,
+    silence_db: float = -50.0,
 ) -> Dict[str, Any]:
     """Run the complete analysis on one audio file.
 
@@ -293,15 +302,18 @@ def analyze_file(
     from backend.p3_event_merging import (
         label_windows,
         load_centroids,
-        load_threshold,
+        load_class_radii,
+        load_unknown_config,
         postprocess_predictions,
     )
 
     centroids: Dict[str, Any] = {}
-    threshold: Optional[float] = None
+    radii = None
+    unknown_cfg: Dict[str, Any] = {"method": "distance", "threshold": None}
     if os.path.exists(centroids_path) and os.path.exists(threshold_path):
         centroids = load_centroids(centroids_path)
-        threshold = load_threshold(threshold_path)
+        radii = load_class_radii(centroids_path)
+        unknown_cfg = load_unknown_config(threshold_path)
     else:
         print(
             f"[run_analysis] WARNING: {centroids_path!r} or {threshold_path!r} not found; "
@@ -317,7 +329,16 @@ def analyze_file(
     )
     duration = max(w["end"] for w in windows)
 
-    labelled = label_windows(windows, centroids, threshold, prob_threshold=prob_threshold)
+    labelled = label_windows(
+        windows,
+        centroids,
+        unknown_cfg["threshold"],
+        prob_threshold=prob_threshold,
+        method=unknown_cfg["method"],
+        radii=radii,
+        min_confidence=min_confidence,
+        silence_db=silence_db,
+    )
     events = postprocess_predictions(labelled, centroids=centroids, top_k=top_k)
     aggregation = aggregate_events(events, total_duration=duration)
     report = format_report(events, aggregation)
@@ -345,6 +366,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--hop", type=float, default=DEFAULT_HOP_SECONDS, help="Hop between windows in seconds (default: 2.0)")
     parser.add_argument("--prob-threshold", type=float, default=0.3,
                         help="Extra classes in a window are reported when their probability is at least this (default: 0.3)")
+    parser.add_argument("--min-confidence", type=float, default=0.3,
+                        help="Windows whose most likely class is below this are treated as background (default: 0.3)")
+    parser.add_argument("--silence-db", type=float, default=-50.0,
+                        help="Windows quieter than this (dBFS) are treated as silence (default: -50)")
     parser.add_argument("--top-k", type=int, default=3, help="Closest known classes listed for Unknown sounds (default: 3)")
     parser.add_argument("--json", metavar="PATH", help="Also save events and aggregation as JSON to PATH.")
     args = parser.parse_args(argv)
@@ -358,6 +383,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         hop_seconds=args.hop,
         prob_threshold=args.prob_threshold,
         top_k=args.top_k,
+        min_confidence=args.min_confidence,
+        silence_db=args.silence_db,
     )
     print(result["report"])
 

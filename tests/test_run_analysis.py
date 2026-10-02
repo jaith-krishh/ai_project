@@ -224,7 +224,7 @@ class TestRunWindowContract:
             start_sec=0.0,
             end_sec=4.0,
         )
-        assert set(result.keys()) == {"start", "end", "probs", "embedding"}
+        assert set(result.keys()) == {"start", "end", "probs", "embedding", "rms_db"}
 
     def test_probs_contains_all_classes(self):
         model = _make_dummy_model(len(CLASS_NAMES))
