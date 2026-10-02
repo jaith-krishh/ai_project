@@ -330,9 +330,15 @@ def aggregate_events(
 # Report Formatting
 # ---------------------------------------------------------------------------
 
-def format_timestamp(seconds: float) -> str:
-    """Convert a timestamp in seconds to MM:SS format."""
-    total_sec = max(0, int(round(seconds)))
+def format_timestamp(seconds: float, mode: str = "round") -> str:
+    """Convert a timestamp in seconds to MM:SS format.
+
+    mode: "round" (default), "floor" (event starts) or "ceil" (event ends), so a
+    sub-second event shows as e.g. 00:00–00:01 instead of 00:00–00:00.
+    """
+    import math
+    rounder = {"floor": math.floor, "ceil": math.ceil}.get(mode, round)
+    total_sec = max(0, int(rounder(seconds - 1e-9 if mode == "ceil" else seconds)))
     minutes = total_sec // 60
     sec = total_sec % 60
     return f"{minutes:02d}:{sec:02d}"
@@ -389,8 +395,8 @@ def format_report(
         col_width = max(13, max_label_len)
 
         for ev, display_label in zip(events, formatted_labels):
-            start_str = format_timestamp(float(ev.get("start", 0.0)))
-            end_str = format_timestamp(float(ev.get("end", 0.0)))
+            start_str = format_timestamp(float(ev.get("start", 0.0)), mode="floor")
+            end_str = format_timestamp(float(ev.get("end", 0.0)), mode="ceil")
             time_range = f"{start_str}\u2013{end_str}"
 
             raw_label = str(ev.get("label", "")).strip().lower()
