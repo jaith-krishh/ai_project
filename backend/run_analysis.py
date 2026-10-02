@@ -312,6 +312,7 @@ def analyze_file(
     ``duration`` (seconds) and ``report`` (formatted text).
     """
     from backend.aggregate_report import aggregate_events, format_report
+    from backend.unknown_scoring import merge_duplicate_probs
     from backend.p3_event_merging import (
         label_windows,
         load_centroids,
@@ -369,8 +370,10 @@ def analyze_file(
                 "start": w["start"],
                 "end": w["end"],
                 "rms_db": round(w.get("rms_db", float("nan")), 1),
-                "top_class": max(w["probs"], key=w["probs"].get),
-                "top_prob": round(max(w["probs"].values()), 3),
+                "top": [
+                    (cls, round(p, 3))
+                    for cls, p in sorted(merge_duplicate_probs(w["probs"]).items(), key=lambda kv: -kv[1])[:3]
+                ],
             }
             for w in windows
         ],
@@ -425,10 +428,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.show_windows:
         loudest = max(w["rms_db"] for w in result["windows"])
-        print("\nWindows (start s, loudness dBFS, dB below loudest, top class, probability):")
+        print("\nWindows (start s, loudness dBFS, dB below loudest, top 3 classes with probability):")
         for w in result["windows"]:
-            print(f"  {w['start']:7.1f}  {w['rms_db']:6.1f}  {loudest - w['rms_db']:5.1f}  "
-                  f"{w['top_class']:<28} {w['top_prob']:.2f}")
+            top = ", ".join(f"{cls} {p:.2f}" for cls, p in w["top"])
+            print(f"  {w['start']:7.1f}  {w['rms_db']:6.1f}  {loudest - w['rms_db']:5.1f}  {top}")
 
     if args.json:
         with open(args.json, "w") as f:

@@ -114,8 +114,16 @@ def compute_unknown_similarity(
     # Sort closest to farthest (smallest distance first, highest similarity first)
     ranked_pairs.sort(key=lambda x: x[1])
 
-    # Select top-k candidate classes
-    top_candidates = ranked_pairs[:top_k]
+    # Select top-k candidate classes, listing each sound once (esc_siren and
+    # us8k_siren are the same sound; keep whichever centroid is closer)
+    from backend.unknown_scoring import sound_name
+    seen = set()
+    deduped = []
+    for pair in ranked_pairs:
+        if sound_name(pair[0]) not in seen:
+            seen.add(sound_name(pair[0]))
+            deduped.append(pair)
+    top_candidates = deduped[:top_k]
 
     # Re-normalize top-k similarity scores so they sum to 1.0 (100%)
     top_sims = np.array([item[2] for item in top_candidates], dtype=np.float64)
@@ -227,6 +235,10 @@ def label_windows(
        it yields a single "Unknown" prediction (confidence = highest class probability).
     3. Uncertain: if its highest class probability is below min_confidence, it
        yields nothing (background the model can't name with any confidence).
+    Classes that are the same sound in both datasets (esc_siren / us8k_siren,
+    esc_car_horn / us8k_car_horn, esc_dog / us8k_dog_bark) have their
+    probabilities summed first, so the model's confidence isn't split between them.
+
     4. Otherwise it yields the highest-probability class, plus every other class
        whose softmax probability is >= prob_threshold, so overlapping sounds
        (e.g. traffic + birds sharing the probability mass) are all kept.
@@ -236,7 +248,7 @@ def label_windows(
     Each prediction's start/end is trimmed to the span the window owns (see
     _owned_spans), so predictions from consecutive windows never overlap.
     """
-    from backend.unknown_scoring import unknown_scores
+    from backend.unknown_scoring import merge_duplicate_probs, unknown_scores
 
     known_labels = [k for k in centroids if k.lower() != "unknown"]
     centroid_matrix = (
@@ -260,7 +272,8 @@ def label_windows(
         if floor is not None and win.get("rms_db") is not None and win["rms_db"] < floor:
             continue
 
-        probs = win["probs"]
+        # One probability per sound: esc_siren + us8k_siren etc. are summed
+        probs = merge_duplicate_probs(win["probs"])
         start = float(win["start"])
         end = spans[start]
         top_label = max(probs, key=probs.get)

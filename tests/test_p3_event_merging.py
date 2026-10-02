@@ -231,5 +231,23 @@ class TestP3EventMerging(unittest.TestCase):
         self.assertEqual([w["label"] for w in kept], ["drilling", "Unknown", "traffic"])
 
 
+    def test_duplicate_dataset_classes_are_merged(self):
+        """Test a sure siren split across esc_siren / us8k_siren isn't flagged Unknown by max_softmax."""
+        windows = [{"start": 0.0, "end": 4.0, "embedding": [1.0, 0.0, 0.0],
+                    "probs": {"esc_siren": 0.45, "us8k_siren": 0.40, "esc_rooster": 0.15}}]
+        labelled = label_windows(windows, self.centroids, threshold=0.5, method="max_softmax")
+        self.assertEqual(len(labelled), 1)
+        self.assertEqual(labelled[0]["label"], "esc_siren")
+        self.assertAlmostEqual(labelled[0]["confidence"], 0.85)
+
+        from backend.unknown_scoring import merge_duplicate_probs, sound_name
+        self.assertEqual(sound_name("us8k_dog_bark"), "dog")
+        self.assertEqual(merge_duplicate_probs({"esc_dog": 0.3, "us8k_dog_bark": 0.5}), {"esc_dog": 0.8})
+
+        sims = compute_unknown_similarity([0.0, 0.0], {"esc_siren": [1.0, 0.0], "us8k_siren": [1.1, 0.0],
+                                                       "esc_rooster": [0.0, 2.0], "esc_wind": [0.0, -3.0]}, top_k=3)
+        self.assertEqual([x["label"] for x in sims], ["esc_siren", "esc_rooster", "esc_wind"])
+
+
 if __name__ == "__main__":
     unittest.main()
