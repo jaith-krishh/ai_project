@@ -296,12 +296,14 @@ def analyze_file(
     silence_db: float = -50.0,
     background_db: Optional[float] = 20.0,
     similarity_temperature: float = 0.5,
+    detect_speech: bool = True,
 ) -> Dict[str, Any]:
     """Run the complete analysis on one audio file.
 
     Steps: sliding-window inference (P2) -> per-window labels with Unknown
     detection against P1's centroids/threshold -> event merging and similarity
-    lists (P3) -> location classification and text report (P4).
+    lists (P3), plus speech detection (Silero VAD, see backend/speech.py) ->
+    location classification and text report (P4).
 
     If ``centroids.pt`` or ``threshold.pt`` is missing, a warning is printed and
     the analysis runs without Unknown detection.
@@ -354,9 +356,22 @@ def analyze_file(
         silence_db=silence_db,
         background_db=background_db,
     )
+    # Speech: the 60 trained classes have no speech class, so a voice-activity
+    # detector adds "Speech" events and replaces voice-like guesses / Unknowns.
+    speech_events: List[Dict[str, Any]] = []
+    if detect_speech:
+        try:
+            from backend.speech import detect_speech as _detect_speech, suppress_voice_like
+            speech_events = _detect_speech(audio_path)
+            labelled = suppress_voice_like(labelled, speech_events)
+        except ImportError:
+            print("[run_analysis] WARNING: silero-vad is not installed; speech detection skipped "
+                  "(pip install -r requirements.txt).")
+
     events = postprocess_predictions(
         labelled, centroids=centroids, top_k=top_k, similarity_temperature=similarity_temperature
     )
+    events = sorted(events + speech_events, key=lambda e: (e["start"], e["end"]))
     aggregation = aggregate_events(events, total_duration=duration)
     report = format_report(events, aggregation)
 
@@ -405,6 +420,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--top-k", type=int, default=3, help="Closest known classes listed for Unknown sounds (default: 3)")
     parser.add_argument("--similarity-temperature", type=float, default=0.5,
                         help="Sharpness of Unknown 'closest matches' percentages; smaller = sharper (default: 0.5)")
+    parser.add_argument("--no-speech", action="store_true",
+                        help="Turn off speech detection (Silero VAD).")
     parser.add_argument("--show-windows", action="store_true",
                         help="Also print each window's loudness, top class and probability (for tuning the thresholds).")
     parser.add_argument("--json", metavar="PATH", help="Also save events and aggregation as JSON to PATH.")
@@ -422,6 +439,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         min_confidence=args.min_confidence,
         silence_db=args.silence_db,
         background_db=args.background_db if args.background_db >= 0 else None,
+        detect_speech=not args.no_speech,
         similarity_temperature=args.similarity_temperature,
     )
     print(result["report"])

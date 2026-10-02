@@ -10,6 +10,7 @@
   --natural: #4f7a4a;
   --other: #7b7b7b;
   --unknown: #b4542d;
+  --speech: #4f6f9a;
   --bar-bg: #efefef;
   --hover: #f6f6f6;
   --border-strong: #c4c4c4;
@@ -33,6 +34,7 @@
   --natural: #7fa977;
   --other: #8c8c8c;
   --unknown: #d97a52;
+  --speech: #8fb0d8;
   --bar-bg: #2c2e31;
   --hover: #26282a;
   --border-strong: #4a4c50;
@@ -53,6 +55,7 @@
     --natural: #7fa977;
     --other: #8c8c8c;
     --unknown: #d97a52;
+    --speech: #8fb0d8;
     --bar-bg: #2c2e31;
     --hover: #26282a;
     --border-strong: #4a4c50;
@@ -133,6 +136,7 @@ audio { width: 100%; margin-top: 8px; }
 .cat-natural { background: var(--natural); }
 .cat-other { background: var(--other); }
 .cat-unknown { background: var(--unknown); }
+.cat-speech { background: var(--speech); }
 
 /* Events table */
 table.events { width: 100%; border-collapse: collapse; }

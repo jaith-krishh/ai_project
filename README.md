@@ -97,6 +97,7 @@ Any format librosa can read works (WAV, FLAC, OGG, MP3). If `centroids.pt` / `th
 | `--silence-db` | `-50` | Windows quieter than this (dBFS) are treated as silence |
 | `--background-db` | `20` | Windows this many dB quieter than the loudest part of the recording are treated as background (negative turns it off). Raise it if quiet real sounds go missing |
 | `--similarity-temperature` | `0.5` | How sharp the Unknown "closest matches" percentages are. Smaller makes the closest class dominate more; larger spreads the percentage more evenly |
+| `--no-speech` | – | Turn off speech detection |
 | `--show-windows` | – | Also print every window's loudness, top class and probability, to help tune the options above |
 | `--top-k` | `3` | Closest known classes listed for each Unknown sound |
 | `--json PATH` | – | Also save events and percentages as JSON |
@@ -111,6 +112,15 @@ print(result["report"])
 result["events"]       # [{"label", "start", "end", "confidence", "similar_to"}, ...]
 result["aggregation"]  # label / category percentages and location
 ```
+
+## Speech
+
+ESC-50 and UrbanSound8K have no speech class, so on its own the model labels talking as the nearest human sound (children playing, laughing) or Unknown. `analyze_file` therefore also runs [Silero VAD](https://github.com/snakers4/silero-vad), a small pretrained voice-activity detector included in the `silero-vad` package (no download at runtime):
+
+- detected speech is added to the report as **Speech** events (pauses under 1 s are joined), counted as "other" (human activity) for the location;
+- where a window is mostly speech, the model's voice-like guesses (children playing, laughing, crying baby) and Unknown flags are dropped, since the speech explains them.
+
+Use `--no-speech` to turn it off. The code is in `backend/speech.py`.
 
 ## Web front end
 
