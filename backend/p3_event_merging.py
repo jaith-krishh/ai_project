@@ -44,7 +44,8 @@ def compute_unknown_similarity(
     embedding: Union[List[float], np.ndarray],
     centroids: Dict[str, Union[List[float], np.ndarray]],
     top_k: int = 3,
-    metric: str = "euclidean"
+    metric: str = "euclidean",
+    temperature: Optional[float] = 0.5
 ) -> List[Dict[str, Union[str, float]]]:
     """
     Calculates distance between an Unknown embedding and all known-class centroids,
@@ -56,6 +57,11 @@ def compute_unknown_similarity(
         centroids: Dict mapping known class labels to centroid vectors.
         top_k: Number of top similar classes to return (default 3).
         metric: Distance metric to use ("euclidean" or "cosine").
+        temperature: Softness of the distance -> similarity conversion. Similarity is
+            proportional to exp(-(d - d_closest) / temperature), so it depends on how much
+            further each class is than the closest one. Smaller = sharper. None falls back
+            to plain inverse-distance weighting (tends to give near-equal percentages,
+            because embedding distances are large compared to the gaps between classes).
 
     Returns:
         List of dicts: [{"label": str, "similarity": float}, ...] sorted by similarity descending.
@@ -95,10 +101,13 @@ def compute_unknown_similarity(
     distances = np.array(distances, dtype=np.float64)
 
     # Convert distances to similarity weights.
-    # Inverse distance weighting with small epsilon to prevent division by zero:
-    epsilon = 1e-8
-    inv_dist = 1.0 / (distances + epsilon)
-    raw_similarities = inv_dist / np.sum(inv_dist)
+    if temperature is not None and temperature > 0:
+        weights = np.exp(-(distances - distances.min()) / temperature)
+    else:
+        # Inverse distance weighting with small epsilon to prevent division by zero:
+        epsilon = 1e-8
+        weights = 1.0 / (distances + epsilon)
+    raw_similarities = weights / np.sum(weights)
 
     # Combine labels with similarity scores
     ranked_pairs = list(zip(labels, distances, raw_similarities))
@@ -361,7 +370,8 @@ def merge_events(predictions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def postprocess_predictions(
     predictions: List[Dict[str, Any]],
     centroids: Optional[Dict[str, Union[List[float], np.ndarray]]] = None,
-    top_k: int = 3
+    top_k: int = 3,
+    similarity_temperature: Optional[float] = 0.5
 ) -> List[Dict[str, Any]]:
     """
     Full P3 post-processing pipeline:
@@ -374,6 +384,7 @@ def postprocess_predictions(
         predictions: Raw window predictions from P2.
         centroids: Known-class centroids dictionary from P1.
         top_k: Number of top similar classes to include for Unknown events (default 3).
+        similarity_temperature: See compute_unknown_similarity (default 0.5).
 
     Returns:
         List of finalized event dictionaries adhering strictly to:
@@ -400,7 +411,8 @@ def postprocess_predictions(
                 similar_to = compute_unknown_similarity(
                     embedding=embedding,
                     centroids=centroids,
-                    top_k=top_k
+                    top_k=top_k,
+                    temperature=similarity_temperature
                 )
             else:
                 similar_to = []

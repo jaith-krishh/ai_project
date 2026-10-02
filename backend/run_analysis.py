@@ -283,6 +283,7 @@ def analyze_file(
     top_k: int = 3,
     min_confidence: float = 0.3,
     silence_db: float = -50.0,
+    similarity_temperature: float = 0.5,
 ) -> Dict[str, Any]:
     """Run the complete analysis on one audio file.
 
@@ -339,7 +340,9 @@ def analyze_file(
         min_confidence=min_confidence,
         silence_db=silence_db,
     )
-    events = postprocess_predictions(labelled, centroids=centroids, top_k=top_k)
+    events = postprocess_predictions(
+        labelled, centroids=centroids, top_k=top_k, similarity_temperature=similarity_temperature
+    )
     aggregation = aggregate_events(events, total_duration=duration)
     report = format_report(events, aggregation)
 
@@ -371,6 +374,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--silence-db", type=float, default=-50.0,
                         help="Windows quieter than this (dBFS) are treated as silence (default: -50)")
     parser.add_argument("--top-k", type=int, default=3, help="Closest known classes listed for Unknown sounds (default: 3)")
+    parser.add_argument("--similarity-temperature", type=float, default=0.5,
+                        help="Sharpness of Unknown 'closest matches' percentages; smaller = sharper (default: 0.5)")
     parser.add_argument("--json", metavar="PATH", help="Also save events and aggregation as JSON to PATH.")
     args = parser.parse_args(argv)
 
@@ -385,6 +390,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         top_k=args.top_k,
         min_confidence=args.min_confidence,
         silence_db=args.silence_db,
+        similarity_temperature=args.similarity_temperature,
     )
     print(result["report"])
 
