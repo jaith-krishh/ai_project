@@ -202,5 +202,20 @@ class TestP3EventMerging(unittest.TestCase):
         self.assertEqual([w["label"] for w in labelled], ["wide", "Unknown"])
 
 
+    def test_similarity_reflects_distance_gaps(self):
+        """Test a clearly closest class dominates, while near-ties stay close to even."""
+        centroids = {"a": [5.0, 0.0], "b": [0.0, 5.8], "c": [-6.6, 0.0], "d": [0.0, -9.0]}
+        clear = compute_unknown_similarity([0.0, 0.0], centroids, top_k=3)
+        self.assertEqual([x["label"] for x in clear], ["a", "b", "c"])
+        self.assertGreater(clear[0]["similarity"], 0.7)
+        self.assertAlmostEqual(sum(x["similarity"] for x in clear), 1.0, places=2)
+
+        tie = compute_unknown_similarity([0.0, 0.0], {"a": [7.28, 0.0], "b": [0.0, 7.34], "c": [-7.64, 0.0]}, top_k=3)
+        self.assertLess(tie[0]["similarity"], 0.5)
+
+        legacy = compute_unknown_similarity([0.0, 0.0], centroids, top_k=3, temperature=None)
+        self.assertLess(legacy[0]["similarity"], 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()
