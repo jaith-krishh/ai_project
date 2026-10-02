@@ -67,7 +67,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from backend.unknown_scoring import METHODS, auroc, unknown_scores
+from backend.unknown_scoring import METHODS, auroc, merge_duplicate_prob_matrix, unknown_scores
 from backend.utils import audio_window_to_mel, load_model, SAMPLE_RATE, TARGET_LENGTH
 
 # ---------------------------------------------------------------------------
@@ -600,7 +600,9 @@ def calibrate_unknown(
     def _probs(embs: torch.Tensor) -> np.ndarray:
         with torch.no_grad():
             logits = model.classifier(embs.to(device).float())[:, keep_idx]
-            return torch.softmax(logits, dim=1).cpu().numpy()
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+        # Same duplicate-sound merging as inference (esc_siren + us8k_siren, ...)
+        return merge_duplicate_prob_matrix(probs, class_names_for_eval)
 
     inputs = {
         "known": dict(embeddings=known_embs.numpy(), probs=_probs(known_embs)),
