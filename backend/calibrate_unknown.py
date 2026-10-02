@@ -42,7 +42,7 @@ Usage (from project root)
     python -m backend.calibrate_unknown --unknown-dir path/to/unknown_audio
 
     # 4. Calibrate using a specific held-out class from the known dataset:
-    python -m backend.calibrate_unknown --holdout-class esc_siren \\
+    python -m backend.calibrate_unknown --holdout-class esc_church_bells \\
         --data-dir data --holdout-as-unknown
 
 Inference usage
@@ -178,6 +178,21 @@ def min_centroid_distances(
     return min_dists
 
 
+def _base_class_name(name: str) -> str:
+    """Strip the dataset prefix: 'us8k_siren' -> 'siren'."""
+    for prefix in ("us8k_", "esc_"):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def holdout_classes_for(holdout_class: str, class_names: List[str]) -> List[str]:
+    """Return the held-out class plus any class with the same base name."""
+    base = _base_class_name(holdout_class)
+    group = [c for c in class_names if _base_class_name(c) == base]
+    return group or [holdout_class]
+
+
 # ---------------------------------------------------------------------------
 # Embedding extraction helpers
 # ---------------------------------------------------------------------------
@@ -310,15 +325,15 @@ def _embed_known_val(
     model: torch.nn.Module,
     device: torch.device,
     val_fraction: float,
-    exclude_class: Optional[str] = None,
+    exclude_classes: Optional[List[str]] = None,
 ) -> torch.Tensor:
     """Extract embeddings for a random validation subset of the known dataset.
 
     Parameters
     ----------
-    exclude_class:
-        Class name to exclude from the known set (used when that class
-        is being treated as the held-out unknown).
+    exclude_classes:
+        Class names to exclude from the known set (the held-out unknown
+        class and any same-named class from the other dataset).
     """
     import librosa
     from backend.dataset import AudioDataset
@@ -328,7 +343,7 @@ def _embed_known_val(
     # Filter out the held-out class if supplied
     eligible = [
         fp for fp, lbl in ds.samples
-        if lbl != exclude_class
+        if lbl not in (exclude_classes or [])
     ]
 
     random.seed(SEED)
@@ -466,13 +481,15 @@ def calibrate_unknown(
         # Remove the held-out class's centroid so distances are measured only
         # to the *remaining* known classes
         if holdout_class in class_names:
-            holdout_idx = class_names.index(holdout_class)
-            mask = torch.ones(len(class_names), dtype=torch.bool)
-            mask[holdout_idx] = False
+            # Also drop same-named classes from the other dataset (e.g. esc_siren
+            # and us8k_siren), otherwise the twin's centroid makes the held-out
+            # class look "known".
+            holdout_group = holdout_classes_for(holdout_class, class_names)
+            mask = torch.tensor([c not in holdout_group for c in class_names])
             centroids_for_eval = centroids[mask]
-            class_names_for_eval = [c for c in class_names if c != holdout_class]
+            class_names_for_eval = [c for c in class_names if c not in holdout_group]
             print(
-                f"[calibrate_unknown] Removed '{holdout_class}' centroid; "
+                f"[calibrate_unknown] Removed centroids {holdout_group}; "
                 f"{len(class_names_for_eval)} centroids remain for distance measurement."
             )
         else:
@@ -499,10 +516,13 @@ def calibrate_unknown(
     # --- Extract KNOWN-class VALIDATION embeddings ----------------------------
     data_available = os.path.exists(data_dir)
     if data_available:
-        exclude = holdout_class if holdout_as_unknown else None
+        exclude = (
+            holdout_classes_for(holdout_class, class_names)
+            if holdout_as_unknown and holdout_class else None
+        )
         try:
             known_embs = _embed_known_val(
-                data_dir, model, device, val_fraction, exclude_class=exclude
+                data_dir, model, device, val_fraction, exclude_classes=exclude
             )
         except Exception as exc:
             print(f"[calibrate_unknown] Could not load known-val from dataset ({exc}). "

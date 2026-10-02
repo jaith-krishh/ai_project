@@ -173,8 +173,8 @@ def _owned_spans(windows: List[Dict[str, Any]]) -> Dict[float, float]:
 def label_windows(
     windows: List[Dict[str, Any]],
     centroids: Dict[str, Union[List[float], np.ndarray]],
-    threshold: float,
-    prob_threshold: float = 0.5
+    threshold: Optional[float],
+    prob_threshold: float = 0.3
 ) -> List[Dict[str, Any]]:
     """
     Converts P2's raw window output ({"start", "end", "probs", "embedding"}) into the
@@ -183,9 +183,11 @@ def label_windows(
     - If the Euclidean distance from a window's embedding to every known centroid
       exceeds P1's threshold, the window yields a single "Unknown" prediction
       (confidence = its highest class probability).
-    - Otherwise it yields one prediction per class whose sigmoid probability is
-      >= prob_threshold, so overlapping sounds (e.g. traffic + birds) are all kept.
-      Windows with no class above prob_threshold yield nothing (background).
+    - Otherwise it yields the highest-probability class, plus every other class
+      whose softmax probability is >= prob_threshold, so overlapping sounds
+      (e.g. traffic + birds sharing the probability mass) are all kept.
+    - If threshold is None (P1's threshold.pt not available yet), unknown
+      detection is skipped.
 
     Each prediction's start/end is trimmed to the span the window owns (see
     _owned_spans), so predictions from consecutive windows never overlap.
@@ -202,14 +204,18 @@ def label_windows(
 
         embedding = np.asarray(win["embedding"], dtype=np.float64)
         is_unknown = False
-        if centroid_matrix is not None:
+        if centroid_matrix is not None and threshold is not None:
             min_dist = float(np.min(np.linalg.norm(centroid_matrix - embedding, axis=1)))
             is_unknown = min_dist > threshold
 
         if is_unknown:
             active = [("Unknown", float(max(probs.values())))]
         else:
-            active = [(label, float(p)) for label, p in probs.items() if p >= prob_threshold]
+            top_label = max(probs, key=probs.get)
+            active = [
+                (label, float(p)) for label, p in probs.items()
+                if label == top_label or p >= prob_threshold
+            ]
 
         for label, confidence in active:
             labelled.append({

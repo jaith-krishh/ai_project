@@ -11,7 +11,7 @@ P3 consumes the output of ``run_analysis()`` and can assume::
     for window in results:
         start     = window["start"]      # float  -- window start in seconds
         end       = window["end"]        # float  -- window end   in seconds
-        probs     = window["probs"]      # dict[str, float]  class -> sigmoid prob
+        probs     = window["probs"]      # dict[str, float]  class -> softmax prob
         embedding = window["embedding"]  # list[float]  128-dim feature vector
 
 P3 does NOT need to know about waveform preprocessing, librosa internals,
@@ -26,7 +26,7 @@ Each window dict contains exactly::
         "end":       float,          # seconds (= start + window_seconds for full
                                      #           windows; actual audio end for the
                                      #           final short window)
-        "probs":     dict[str, float],  # ALL known classes, sigmoid probabilities
+        "probs":     dict[str, float],  # ALL known classes, softmax probabilities (sum to 1)
         "embedding": list[float],       # 128-dim CPU-side serialisable vector
     }
 
@@ -118,8 +118,9 @@ def _run_window(
         else:
             logits = model(spec)                # (1, num_classes)
 
-    # Sigmoid probabilities (model returns raw logits)
-    probs_tensor = torch.sigmoid(logits)        # (1, num_classes)
+    # Softmax probabilities: the model was trained with CrossEntropyLoss
+    # (single-label), so softmax is the calibrated output, not sigmoid.
+    probs_tensor = F.softmax(logits, dim=1)     # (1, num_classes)
 
     # Move to CPU and convert
     probs_np = probs_tensor.squeeze(0).cpu().numpy()   # (num_classes,)
@@ -181,7 +182,7 @@ def run_analysis(
             {
                 "start":     float,            # window start (seconds)
                 "end":       float,            # window end   (seconds, actual audio time)
-                "probs":     dict[str, float], # ALL classes, sigmoid [0, 1]
+                "probs":     dict[str, float], # ALL classes, softmax [0, 1]
                 "embedding": list[float],      # 128-dim feature vector
             }
 
@@ -254,3 +255,117 @@ def run_analysis(
 
     # Results are already chronological (start_sample increments monotonically)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline (P1 + P2 + P3 + P4)
+# ---------------------------------------------------------------------------
+
+DEFAULT_CENTROIDS = os.path.join("outputs", "centroids.pt")
+DEFAULT_THRESHOLD = os.path.join("outputs", "threshold.pt")
+
+
+def analyze_file(
+    audio_path: str,
+    checkpoint_path: str = DEFAULT_CHECKPOINT,
+    centroids_path: str = DEFAULT_CENTROIDS,
+    threshold_path: str = DEFAULT_THRESHOLD,
+    window_seconds: float = DEFAULT_WINDOW_SECONDS,
+    hop_seconds: float = DEFAULT_HOP_SECONDS,
+    prob_threshold: float = 0.3,
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    """Run the complete analysis on one audio file.
+
+    Steps: sliding-window inference (P2) -> per-window labels with Unknown
+    detection against P1's centroids/threshold -> event merging and similarity
+    lists (P3) -> location classification and text report (P4).
+
+    If ``centroids.pt`` or ``threshold.pt`` is missing, a warning is printed and
+    the analysis runs without Unknown detection.
+
+    Returns
+    -------
+    dict with keys ``events`` (P3 event list), ``aggregation`` (P4 result),
+    ``duration`` (seconds) and ``report`` (formatted text).
+    """
+    from backend.aggregate_report import aggregate_events, format_report
+    from backend.p3_event_merging import (
+        label_windows,
+        load_centroids,
+        load_threshold,
+        postprocess_predictions,
+    )
+
+    centroids: Dict[str, Any] = {}
+    threshold: Optional[float] = None
+    if os.path.exists(centroids_path) and os.path.exists(threshold_path):
+        centroids = load_centroids(centroids_path)
+        threshold = load_threshold(threshold_path)
+    else:
+        print(
+            f"[run_analysis] WARNING: {centroids_path!r} or {threshold_path!r} not found; "
+            "Unknown-sound detection is disabled. Run backend.compute_centroids and "
+            "backend.calibrate_unknown first (see README.md)."
+        )
+
+    windows = run_analysis(
+        audio_path,
+        checkpoint_path=checkpoint_path,
+        window_seconds=window_seconds,
+        hop_seconds=hop_seconds,
+    )
+    duration = max(w["end"] for w in windows)
+
+    labelled = label_windows(windows, centroids, threshold, prob_threshold=prob_threshold)
+    events = postprocess_predictions(labelled, centroids=centroids, top_k=top_k)
+    aggregation = aggregate_events(events, total_duration=duration)
+    report = format_report(events, aggregation)
+
+    return {
+        "events": events,
+        "aggregation": aggregation,
+        "duration": duration,
+        "report": report,
+    }
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Acoustic Sound Analyzer: detect sounds, flag unknowns and classify the location of an audio file."
+    )
+    parser.add_argument("--input", required=True, help="Path to the audio file to analyse.")
+    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT, help=f"Model checkpoint (default: {DEFAULT_CHECKPOINT})")
+    parser.add_argument("--centroids", default=DEFAULT_CENTROIDS, help=f"Class centroids from compute_centroids (default: {DEFAULT_CENTROIDS})")
+    parser.add_argument("--threshold", default=DEFAULT_THRESHOLD, help=f"Unknown threshold from calibrate_unknown (default: {DEFAULT_THRESHOLD})")
+    parser.add_argument("--window", type=float, default=DEFAULT_WINDOW_SECONDS, help="Window length in seconds (default: 4.0)")
+    parser.add_argument("--hop", type=float, default=DEFAULT_HOP_SECONDS, help="Hop between windows in seconds (default: 2.0)")
+    parser.add_argument("--prob-threshold", type=float, default=0.3,
+                        help="Extra classes in a window are reported when their probability is at least this (default: 0.3)")
+    parser.add_argument("--top-k", type=int, default=3, help="Closest known classes listed for Unknown sounds (default: 3)")
+    parser.add_argument("--json", metavar="PATH", help="Also save events and aggregation as JSON to PATH.")
+    args = parser.parse_args(argv)
+
+    result = analyze_file(
+        args.input,
+        checkpoint_path=args.checkpoint,
+        centroids_path=args.centroids,
+        threshold_path=args.threshold,
+        window_seconds=args.window,
+        hop_seconds=args.hop,
+        prob_threshold=args.prob_threshold,
+        top_k=args.top_k,
+    )
+    print(result["report"])
+
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump({k: v for k, v in result.items() if k != "report"}, f, indent=2)
+        print(f"\n[run_analysis] JSON saved -> {args.json}")
+
+
+if __name__ == "__main__":
+    main()
