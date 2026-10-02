@@ -254,6 +254,32 @@ class TestClassifyLocationThresholds:
         assert classify_location({"industrial": 0.0, "natural": 0.0}) == "Mixed / Residential"
 
 
+class TestOverlapAndFormatting:
+    """Overlapping events must not be double-counted; similarity labels must be cleaned."""
+
+    def test_overlapping_events_counted_once(self):
+        events = [
+            {"label": "us8k_drilling", "start": 0.0, "end": 8.0, "confidence": 0.9, "similar_to": None},
+            {"label": "us8k_jackhammer", "start": 4.0, "end": 10.0, "confidence": 0.8, "similar_to": None},
+            {"label": "us8k_drilling", "start": 6.0, "end": 9.0, "confidence": 0.7, "similar_to": None},
+        ]
+        result = aggregate_events(events, total_duration=20.0)
+        assert result["label_percentages"]["us8k_drilling"] == 45.0
+        assert result["category_percentages"]["industrial"] == 50.0
+        assert result["location"] == "Mixed / Residential"
+
+    def test_similar_to_labels_are_cleaned(self):
+        events = [{
+            "label": "Unknown", "start": 0.0, "end": 5.0, "confidence": 0.5,
+            "similar_to": [
+                {"label": "us8k_engine_idling", "similarity": 0.6},
+                {"label": "esc_chirping_birds", "similarity": 0.4},
+            ],
+        }]
+        report = format_report(events, aggregate_events(events, total_duration=5.0))
+        assert "closest matches: 60% engine idling, 40% chirping birds" in report
+
+
 # ---------------------------------------------------------------------------
 # Direct Runner
 # ---------------------------------------------------------------------------
