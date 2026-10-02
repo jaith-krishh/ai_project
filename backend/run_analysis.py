@@ -32,12 +32,14 @@ Each window dict contains exactly::
         "rms_db":    float,             # RMS loudness of the real (unpadded) audio, dBFS
     }
 
-Padding note
-------------
-The final window may be shorter than ``window_seconds``.  The raw waveform is
-zero-padded to ``TARGET_LENGTH`` before mel-spectrogram computation so the
-model always receives a fixed-size input.  ``end`` reports the *actual* audio
-time (not the padded end), so callers know the true temporal coverage.
+Last-window note
+----------------
+When the hop would leave a final window that runs past the end of the audio,
+that window is shifted back to end exactly at the audio end, so it is still a
+full window of real sound (it then overlaps its predecessor by more than usual;
+P3's owned-span trimming keeps events from double-counting). Only audio shorter
+than one window is zero-padded to ``TARGET_LENGTH``; ``end`` always reports the
+*actual* audio time.
 
 Default sliding-window settings
 --------------------------------
@@ -235,6 +237,15 @@ def run_analysis(
     start_sample = 0
     while start_sample < total_samples:
         end_sample = start_sample + window_samples
+
+        # Align the last window to the end of the audio instead of zero-padding
+        # it, so the model always sees a full window of real sound (the model was
+        # trained on full-length clips; padded windows give unreliable, low-
+        # confidence predictions). Only possible when the audio is at least one
+        # window long; shorter audio is still padded.
+        if end_sample > total_samples and start_sample > 0 and total_samples >= window_samples:
+            start_sample = total_samples - window_samples
+            end_sample = total_samples
 
         # Actual audio end time (may be before the padded window end)
         actual_end_sample = min(end_sample, total_samples)

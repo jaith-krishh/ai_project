@@ -446,7 +446,8 @@ class TestRunAnalysis:
         reason="No trained checkpoint found at outputs/checkpoints/best_model.pt",
     )
     def test_partial_window_7s_audio(self, tmp_path):
-        """7 s audio, 4 s window, 2 s hop -> 3 windows with final partial window ending at 7.0s."""
+        """7 s audio, 4 s window, 2 s hop -> 3 windows; the last is shifted back to 3-7 s
+        so it is a full window of real audio ending at 7.0 s."""
         import soundfile as sf
         wav_path = str(tmp_path / "seven_sec.wav")
         data = _make_sine(7.0)
@@ -458,7 +459,7 @@ class TestRunAnalysis:
             hop_seconds=2.0,
         )
         assert len(results) == 3
-        assert [w["start"] for w in results] == pytest.approx([0.0, 2.0, 4.0], abs=0.01)
+        assert [w["start"] for w in results] == pytest.approx([0.0, 2.0, 3.0], abs=0.01)
         assert [w["end"] for w in results] == pytest.approx([4.0, 6.0, 7.0], abs=0.01)
 
     @pytest.mark.skipif(
@@ -525,3 +526,18 @@ class TestAnalyzeFile:
         out = capsys.readouterr().out
         assert "Unknown" in out
         assert "closest matches:" in out
+
+
+@pytest.mark.skipif(not os.path.exists(DEFAULT_CHECKPOINT), reason="trained checkpoint not available")
+def test_last_window_aligned_to_audio_end(tmp_path):
+    """5 s audio, 4 s window / 2 s hop -> windows 0-4 and 1-5 (last one shifted back, not padded)."""
+    import soundfile as sf
+    path = str(tmp_path / "five.wav")
+    sf.write(path, _make_sine(5.0), SAMPLE_RATE)
+    windows = run_analysis(path, checkpoint_path=DEFAULT_CHECKPOINT, device=torch.device("cpu"))
+    assert [(round(w["start"], 3), round(w["end"], 3)) for w in windows] == [(0.0, 4.0), (1.0, 5.0)]
+
+    path = str(tmp_path / "three.wav")
+    sf.write(path, _make_sine(3.0), SAMPLE_RATE)
+    windows = run_analysis(path, checkpoint_path=DEFAULT_CHECKPOINT, device=torch.device("cpu"))
+    assert [(round(w["start"], 3), round(w["end"], 3)) for w in windows] == [(0.0, 3.0)]
